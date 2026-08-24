@@ -24,10 +24,20 @@ export type CycleCall = {
   call: string; // one plain sentence: what this implies into the next report
 };
 
+// the verdict: a fixed five-notch spine so calls are trackable scan over scan,
+// with a free-voice one-liner on top. The enum is what makes the swagger auditable.
+export const VERDICT_ACTIONS = ["buy_a_lot", "buy_a_little", "hold", "sell_a_little", "sell_a_lot"] as const;
+export type Verdict = {
+  action: (typeof VERDICT_ACTIONS)[number];
+  one_liner: string; // the model's own voice — punchy, ≤90 chars
+  why: string; // one sentence: the measured facts that force this notch
+  confidence: number; // 0..1
+};
+
 export async function synthesizeTakeaways(
   sql: Sql,
   opts: { companyId: number; companyName: string; ticker: string; scanId: number },
-): Promise<{ takeaways: Takeaway[]; cycle: CycleCall | null; deltas: ScanDeltas } | null> {
+): Promise<{ takeaways: Takeaway[]; cycle: CycleCall | null; verdict: Verdict | null; deltas: ScanDeltas } | null> {
   const deltas = await computeDeltas(sql, opts.companyId, opts.scanId);
   const cycleFrame = await computeCycle(sql, opts.companyId);
 
@@ -96,7 +106,8 @@ export async function synthesizeTakeaways(
           role: "system",
           content: `You are an equity research analyst writing the top of a company page. Your reader is a public-market investor deciding whether this company's NEXT REPORT will be better or worse than the market expects — every sentence must earn its place in that decision. From the scan data provided (all of it measured or verbatim-scraped — nothing else exists), write EXACTLY 3 takeaways plus a reporting-cycle call. STRICT JSON:
 {"takeaways":[{"finding":"one sentence: the conclusion, stated plainly, with its number(s)","why_it_matters":"one sentence: the business consequence","what_it_changes":"one sentence: what a reader should do or watch differently","sources":["source labels used"]}],
- "cycle":{"position":"one line placing the company in its reporting cycle from reporting_cycle (days since the anchor filing, expected next report date labeled 'expected')","early_signals":"one sentence naming THIS cycle's freshest dated signals — name the geography, store, or product when the evidence names it; if reporting_cycle.freshCount is 0, say no dated signal has landed yet this cycle","direction":"down|up|mixed — the business pressure into the next report, judged ONLY from this cycle's evidence and how the last cycle resolved","call":"one plain sentence a non-finance reader understands: what to expect into the next report and why, calibrated against the last cycle (e.g. the measured lead time, or the fact that similar complaints last cycle did NOT dent the official record — history rhyming counts in both directions)"}}
+ "cycle":{"position":"one line placing the company in its reporting cycle from reporting_cycle (days since the anchor filing, expected next report date labeled 'expected')","early_signals":"one sentence naming THIS cycle's freshest dated signals — name the geography, store, or product when the evidence names it; if reporting_cycle.freshCount is 0, say no dated signal has landed yet this cycle","direction":"down|up|mixed — the business pressure into the next report, judged ONLY from this cycle's evidence and how the last cycle resolved","call":"one plain sentence a non-finance reader understands: what to expect into the next report and why, calibrated against the last cycle (e.g. the measured lead time, or the fact that similar complaints last cycle did NOT dent the official record — history rhyming counts in both directions)"},
+ "verdict":{"action":"buy_a_lot|buy_a_little|hold|sell_a_little|sell_a_lot","one_liner":"your own voice, ≤90 chars, punchy — colloquial welcome, must agree with action","why":"one sentence: the measured facts (deltas, cycle direction, lead-time calibration) that force this notch","confidence":0.0}}
 Rules:
 - MATERIALITY: judge every number at the company's scale before using it. A 2-person layoff at a 9,700-store chain is noise; a product incident spanning 14 states is material. Never dress noise up as a finding — if a family's signal is immaterial, say it is quiet and move to what IS material. Never write "the baseline is mixed" filler.
 - RECENCY: anything older than ~12 months is historical context. It may calibrate how current signals tend to resolve, but it must never lead a takeaway unless a fresh dated echo exists this cycle. Always state the date of an old event when you use one.
@@ -108,7 +119,8 @@ Rules:
 - Lead with movement (deltas since the last scan) when it exists; on a first scan, say the baseline is set and what the next scan will resolve.
 - Takeaways are about the company's business — customers, stores, hiring, leadership, operations. The scoring system itself is never the subject; family score moves are supporting color only.
 - cycle.direction is a business-pressure judgment, not a stock call. Ground it in both halves: fresh adverse evidence AND an adversely-resolved last cycle → down; fresh adverse evidence but a last cycle whose official record absorbed similar complaints → up or mixed, and say history is rhyming. No fresh dated evidence → mixed, and say the cycle is quiet so far.
-- Direction-of-business language only. No buy/sell/hold advice, no price targets.
+- Takeaways and cycle use direction-of-business language only — no position language, no price targets. The verdict object is the ONE place position language is allowed.
+- VERDICT rules: the notch must follow from the same measured facts as everything else — never from vibes. HOLD is the default whenever material evidence is absent or the cycle is quiet; never manufacture conviction. The strong notches (a lot) require BOTH material fresh evidence this cycle AND a last cycle that resolved consistently with it (the measured lead time counts). confidence ≤ 0.4 on a first scan or thin evidence; it may exceed 0.7 only when a measured lead time exists and this cycle's signal family is moving the same way it did before the last filing. one_liner is free voice — make it land — but it must never promise more than the notch says.
 - sources: only labels present in the data (e.g. "Reddit", "SEC EDGAR", "Company sitemap").`,
         },
         { role: "user", content: JSON.stringify(facts) },
@@ -121,7 +133,7 @@ Rules:
     return null;
   }
   const data = (await response.json()) as { choices: { message: { content: string } }[] };
-  let parsed: { takeaways?: Takeaway[]; cycle?: CycleCall };
+  let parsed: { takeaways?: Takeaway[]; cycle?: CycleCall; verdict?: Verdict };
   try {
     parsed = JSON.parse(data.choices[0].message.content);
   } catch {
@@ -140,10 +152,16 @@ Rules:
     parsed.cycle && parsed.cycle.call && ["down", "up", "mixed"].includes(parsed.cycle.direction)
       ? parsed.cycle
       : null;
+  const verdict =
+    parsed.verdict && parsed.verdict.one_liner && parsed.verdict.why && VERDICT_ACTIONS.includes(parsed.verdict.action)
+      ? { ...parsed.verdict, confidence: Math.min(1, Math.max(0, Number(parsed.verdict.confidence) || 0)) }
+      : null;
 
   await sql`
-    update scans set takeaways = ${sql.json({ generated_at: new Date().toISOString(), model: MODEL, items: takeaways, cycle } as never)}
+    update scans set takeaways = ${sql.json({ generated_at: new Date().toISOString(), model: MODEL, items: takeaways, cycle, verdict } as never)}
     where id = ${opts.scanId}`;
-  console.log(`synthesize: scan ${opts.scanId} — ${takeaways.length} takeaways saved, cycle call ${cycle ? cycle.direction : "absent"}`);
-  return { takeaways, cycle, deltas };
+  console.log(
+    `synthesize: scan ${opts.scanId} — ${takeaways.length} takeaways saved, cycle call ${cycle ? cycle.direction : "absent"}, verdict ${verdict ? `${verdict.action} @ ${verdict.confidence}` : "absent"}`,
+  );
+  return { takeaways, cycle, verdict, deltas };
 }

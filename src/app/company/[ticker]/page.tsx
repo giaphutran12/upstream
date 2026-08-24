@@ -85,9 +85,15 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
   const previous = deltas?.score.previous ?? null;
   const falling = score != null && (previous != null ? score < previous : score < 50);
 
-  const scanMeta = scan?.takeaways as { items?: TakeawayRow[]; cycle?: CycleCallRow | null; generated_at?: string } | null;
+  const scanMeta = scan?.takeaways as {
+    items?: TakeawayRow[];
+    cycle?: CycleCallRow | null;
+    verdict?: { action: string; one_liner: string; why: string; confidence: number } | null;
+    generated_at?: string;
+  } | null;
   const takeaways = (scanMeta?.items ?? []) as TakeawayRow[];
   const cycleCall = scanMeta?.cycle ?? null;
+  const verdict = scanMeta?.verdict ?? null;
 
   // movers: metrics with a baseline, largest relative change first — each with
   // its freshest piece of evidence from the same family
@@ -176,6 +182,7 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
 
       {takeaways.length > 0 && (
         <div className="rule-hairline px-12 pb-9 pt-7">
+          {verdict && <VerdictCard verdict={verdict} />}
           <Takeaways items={takeaways} generatedAgo={timeAgo(scanMeta?.generated_at ?? null)} />
           {cycleCall && (
             <div className="mt-7">
@@ -424,6 +431,35 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
         </aside>
       </div>
     </main>
+  );
+}
+
+const VERDICT_DISPLAY: Record<string, { label: string; tone: "buy" | "hold" | "sell" }> = {
+  buy_a_lot: { label: "Buy · a lot", tone: "buy" },
+  buy_a_little: { label: "Buy · a little", tone: "buy" },
+  hold: { label: "Hold", tone: "hold" },
+  sell_a_little: { label: "Sell · a little", tone: "sell" },
+  sell_a_lot: { label: "Sell · a lot", tone: "sell" },
+};
+
+/** The call: fixed five-notch spine (trackable scan over scan), free voice on top. */
+function VerdictCard({ verdict }: { verdict: { action: string; one_liner: string; why: string; confidence: number } }) {
+  const display = VERDICT_DISPLAY[verdict.action] ?? { label: verdict.action.replaceAll("_", " "), tone: "hold" as const };
+  const color = display.tone === "sell" ? "var(--color-rust)" : display.tone === "buy" ? "var(--color-ink)" : "var(--color-muted)";
+  return (
+    <div className="mb-8 flex flex-wrap items-baseline gap-x-6 gap-y-2 border-b pb-6" style={{ borderColor: "var(--color-hairline)" }}>
+      <div className="eyebrow" style={{ color: "var(--color-rust)", letterSpacing: "0.16em" }}>The call</div>
+      <div className="font-serif text-[30px] font-medium leading-tight tracking-tight" style={{ color }}>
+        {verdict.one_liner}
+      </div>
+      <div className="text-[13px] font-semibold tnum" style={{ color }}>
+        {display.label} · confidence {Math.round(verdict.confidence * 100)}%
+      </div>
+      <div className="w-full text-[12.5px] leading-normal text-muted">
+        {verdict.why}{" "}
+        <span style={{ opacity: 0.75 }}>Research signal from primary-source evidence — not investment advice.</span>
+      </div>
+    </div>
   );
 }
 

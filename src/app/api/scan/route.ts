@@ -6,8 +6,8 @@ import { readEdgar } from "@/lib/edgar";
 import { collectStoreFootprint, collectJobsFootprint, countDeltaRead } from "@/lib/footprint";
 import { directionScore, familyScores } from "@/lib/scoring";
 import { resolveCompany } from "@/lib/resolve";
-import { planDeepProbes, probeToSpec, type PlaybookEntry } from "@/lib/planner";
-import { synthesizeTakeaways, type CycleCall, type Takeaway } from "@/lib/synthesize";
+import { planDeepProbes, replanProbes, probeToSpec, type PlaybookEntry } from "@/lib/planner";
+import { synthesizeTakeaways, type CycleCall, type Takeaway, type Verdict } from "@/lib/synthesize";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -20,7 +20,7 @@ type ScanEvent =
   | { type: "source_streaming"; key: string; streamingUrl: string }
   | { type: "source_complete"; key: string; ok: boolean; durationMs: number; itemsRead: number; note: string | null; error?: string; samples?: { quote: string; source_label: string; published_at: string | null }[] }
   | { type: "score_updated"; score: number | null; provisional: boolean; families: Record<string, { score: number; weight: number }> }
-  | { type: "takeaways"; items: Takeaway[]; cycle: CycleCall | null }
+  | { type: "takeaways"; items: Takeaway[]; cycle: CycleCall | null; verdict: Verdict | null }
   | { type: "scan_complete"; scanId: number; score: number | null }
   | { type: "scan_error"; message: string };
 
@@ -353,6 +353,38 @@ export async function POST(request: Request) {
         await Promise.allSettled(sources.map((spec) => runOne(spec)));
         await probesDone;
 
+        // round 2 — the loop that makes this agentic: the planner reads what
+        // actually landed (fixed fleet + round-1 probes) and decides what those
+        // findings change about what's worth asking. Zero probes = it chose to
+        // stop. Hard cap: one extra round, ≤3 probes, search+fetch only.
+        try {
+          const yields = await sql`
+            select source_key, coalesce(items_read, 0)::int as items_read
+            from source_runs where scan_id = ${scan.id} order by items_read desc nulls last`;
+          const topEvidence = await sql`
+            select quote, source_label, family, to_char(published_at, 'YYYY-MM-DD') as published_at
+            from evidence where scan_id = ${scan.id}
+            order by abs(coalesce(sentiment, 0)) desc, published_at desc nulls last limit 12`;
+          const { probes: round2 } = await replanProbes({
+            companyName: company.name,
+            ticker: company.ticker,
+            yields: yields.map((y) => ({ source: String(y.source_key), itemsRead: Number(y.items_read) })),
+            topEvidence: topEvidence.map((e) => ({
+              quote: String(e.quote),
+              source: String(e.source_label),
+              date: (e.published_at as string | null) ?? null,
+              family: String(e.family),
+            })),
+          });
+          if (round2.length > 0) {
+            const specs2 = round2.map(probeToSpec);
+            send({ type: "sources_added", sources: specs2.map((s) => ({ key: s.key, label: s.label, family: s.family })) });
+            await Promise.allSettled(specs2.map((spec) => runOne(spec)));
+          }
+        } catch (err) {
+          console.log(`scan ${scan.id}: replan failed because ${err instanceof Error ? err.message : String(err)} — round 1 stands`);
+        }
+
         const families = familyScores(reads);
         const { score } = directionScore(families);
 
@@ -365,7 +397,7 @@ export async function POST(request: Request) {
             ticker: company.ticker,
             scanId: scan.id,
           });
-          if (synthesis) send({ type: "takeaways", items: synthesis.takeaways, cycle: synthesis.cycle });
+          if (synthesis) send({ type: "takeaways", items: synthesis.takeaways, cycle: synthesis.cycle, verdict: synthesis.verdict });
         } catch (err) {
           console.log(`scan ${scan.id}: synthesis failed because ${err instanceof Error ? err.message : String(err)} — scan still completes`);
         }

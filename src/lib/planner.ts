@@ -57,6 +57,57 @@ Playbook from previous scans of this company (query → evidence rows it yielded
   return probes;
 }
 
+/**
+ * The second pass — the part that makes the planner an agent instead of a
+ * one-shot prompt: it READS what the scan actually found, decides what those
+ * findings change about what's worth asking, and either issues new probes it
+ * could not have written blind (each must cite the round-1 finding or gap that
+ * triggered it) or decides to stop. Stopping is a decision, not a failure.
+ */
+export async function replanProbes(opts: {
+  companyName: string;
+  ticker: string;
+  yields: { source: string; itemsRead: number }[];
+  topEvidence: { quote: string; source: string; date: string | null; family: string }[];
+}): Promise<{ probes: Probe[]; reasoning: string }> {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: `You are the research planner on your SECOND pass over a live primary-source scan of ${opts.companyName} (${opts.ticker}). Round 1 is complete; its per-source yields and strongest verbatim evidence follow. Your job is the agentic step: decide what these findings CHANGE about what is worth asking, then act.
+- A round-2 probe must be conditioned on round 1: it chases a specific finding deeper, or fills a gap round 1 exposed. Its "why" must say so explicitly: "round 1 found/lacked X → therefore search Y".
+- MARKET LENS is in scope on this pass even though round 1 was customer-focused: notable investor positions or public short theses against the ticker, analyst action, litigation or regulatory news. Phrase these as news searches with recency terms (the current year, "this week").
+- HARD CONSTRAINT unchanged: each probe must be answerable by a WEB SEARCH whose top results read as plain fetched pages — no logins, no PDFs behind forms.
+- STOPPING IS A DECISION: if nothing found warrants a second pass, return zero probes and say why in "reasoning".
+STRICT JSON: {"reasoning":"2-3 sentences: what round 1 changed about your priorities","probes":[{"label":"short human name","family":"sentiment|workforce|leadership|ops","query":"the exact search query","why":"round 1 found/lacked X → therefore Y","metricHint":"optional"}]} — at most 3 probes.`,
+        },
+        {
+          role: "user",
+          content: JSON.stringify({ round1_yields: opts.yields, strongest_evidence: opts.topEvidence }),
+        },
+      ],
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`replan: OpenAI ${response.status} — ${body.slice(0, 200)}`);
+  }
+  const data = (await response.json()) as { choices: { message: { content: string } }[] };
+  const parsed = JSON.parse(data.choices[0].message.content) as { reasoning?: string; probes?: Probe[] };
+  const families: Family[] = ["sentiment", "workforce", "leadership", "ops"];
+  const probes = (parsed.probes ?? [])
+    .filter((p) => p.label && p.query && families.includes(p.family))
+    .slice(0, 3);
+  const reasoning = parsed.reasoning ?? "no reasoning returned";
+  console.log(`replan: ${opts.ticker} — ${probes.length} round-2 probes (${probes.map((p) => p.label).join("; ") || "stopped"}) because ${reasoning}`);
+  return { probes, reasoning };
+}
+
 /** A planned probe becomes an ordinary search-kind source the scan runner already knows how to execute. */
 export function probeToSpec(probe: Probe): SourceSpec {
   return {
