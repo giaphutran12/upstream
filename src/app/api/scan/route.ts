@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { fetchPages, inWaves, runAgent, searchWeb } from "@/lib/tinyfish";
+import { fetchPages, runAgent, searchWeb, withBrowserSlot } from "@/lib/tinyfish";
 import { plannedSources, FAMILY_WEIGHTS, type Family, type SourceProfile, type SourceSpec } from "@/lib/sources";
 import { normalizeSource, verifyQuotes } from "@/lib/normalize";
 import { readEdgar } from "@/lib/edgar";
@@ -201,14 +201,16 @@ export async function POST(request: Request) {
               }
 
               if (viaAgent) {
-                const outcome = await runAgent({
-                  url: urls[0],
-                  goal: spec.goal!(company.name),
-                  stealth: spec.kind === "fetch" ? true : spec.stealth,
-                  proxyUS: true,
-                  onProgress: (purpose) => send({ type: "source_progress", key: spec.key, purpose }),
-                  onStreamingUrl: (streamingUrl) => send({ type: "source_streaming", key: spec.key, streamingUrl }),
-                });
+                const outcome = await withBrowserSlot(() =>
+                  runAgent({
+                    url: urls[0],
+                    goal: spec.goal!(company.name),
+                    stealth: spec.kind === "fetch" ? true : spec.stealth,
+                    proxyUS: true,
+                    onProgress: (purpose) => send({ type: "source_progress", key: spec.key, purpose }),
+                    onStreamingUrl: (streamingUrl) => send({ type: "source_streaming", key: spec.key, streamingUrl }),
+                  }),
+                );
                 runId = outcome.runId;
                 if (!outcome.ok) throw new Error(outcome.error ?? "agent failed");
                 raw = outcome.result;
@@ -281,7 +283,8 @@ export async function POST(request: Request) {
           });
         };
 
-        await inWaves(sources, 5, runOne);
+        // everything dispatches at once; only live browser runs contend for the 5 slots
+        await Promise.allSettled(sources.map((spec) => runOne(spec)));
 
         const families = familyScores(reads);
         const { score } = directionScore(families);

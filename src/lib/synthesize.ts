@@ -75,11 +75,13 @@ export async function synthesizeTakeaways(
           content: `You are an equity research analyst writing the top of a company page. From the scan data provided (all of it measured or verbatim-scraped — nothing else exists), write EXACTLY 3 takeaways. STRICT JSON:
 {"takeaways":[{"finding":"one sentence: the conclusion, stated plainly, with its number(s)","why_it_matters":"one sentence: the business consequence","what_it_changes":"one sentence: what a reader should do or watch differently","sources":["source labels used"]}]}
 Rules:
-- Takeaways are about the COMPANY'S BUSINESS — customers, stores, hiring, leadership, operations. Never make the scoring system itself the finding; family score moves may only appear as supporting color after a business fact.
-- Every number, date, and quote fragment MUST appear verbatim in the data. Never estimate, extrapolate, or fill gaps.
-- Lead with movement (deltas, changes since last scan) when it exists; on a first scan, lead with the strongest measured levels and say the baseline is now set.
-- If a measured lead time exists, use it in exactly one takeaway to frame why today's leading signal deserves attention.
-- Say something the reader could not conclude from a single quote: connect at least two data points per takeaway when possible.
+- A takeaway is a CONCLUSION, not a report. Test: if the sentence could have been written by reading one source's summary line, it fails. Every finding must JOIN at least two different sources or dimensions (complaint trend × store footprint, hiring mix × leadership timeline, outage reports × review velocity) and state what the combination means for the business.
+- State the conclusion first; numbers arrive as the supporting clause. Never open with "<Source> remains at / shows / reports…".
+- Every number, date, and quote fragment MUST appear verbatim in the data. Never estimate, extrapolate, or fill gaps. If the data is too thin to support a join, say precisely what is missing and what the next scan will resolve — never pad.
+- what_it_changes must be decision-relevant and falsifiable: a stated expectation for coming scans, a thesis strengthened or weakened, or a threshold that would flip the read. "Watch/monitor/track X" phrasing may appear at most once across all three takeaways.
+- If a measured lead time exists, exactly one takeaway must calibrate today's leading signal against it: the signal family led the last official filing by N days — say what that same family is doing right now and what that implies about where the company is in that cycle.
+- Lead with movement (deltas since the last scan) when it exists; on a first scan, say the baseline is set and what the next scan will resolve.
+- Takeaways are about the company's business — customers, stores, hiring, leadership, operations. The scoring system itself is never the subject; family score moves are supporting color only.
 - Direction-of-business language only. No buy/sell/hold advice, no price targets.
 - sources: only labels present in the data (e.g. "Reddit", "SEC EDGAR", "Company sitemap").`,
         },

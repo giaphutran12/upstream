@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { TopBar } from "@/components/TopBar";
 import { Takeaways } from "@/components/Takeaways";
@@ -13,9 +13,43 @@ const FAMILY_ROWS = [
   { key: "ops", label: "Product / Ops", weight: "10%" },
 ] as const;
 
+type CompanyHit = { ticker: string; name: string };
+
 export default function LiveScanPage() {
   const { state, start } = useScan();
   const [ticker, setTicker] = useState("");
+  const [suggestions, setSuggestions] = useState<CompanyHit[]>([]);
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const picked = useRef<string | null>(null);
+
+  // fuzzy company lookup: type "MCDONALDS", get MCD — nobody memorizes tickers
+  useEffect(() => {
+    if (picked.current === ticker || ticker.trim().length < 2) {
+      setSuggestions([]);
+      setOpen(false);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/companies?q=${encodeURIComponent(ticker.trim())}`);
+        const data = (await res.json()) as { results?: CompanyHit[] };
+        setSuggestions(data.results ?? []);
+        setHighlight(0);
+        setOpen((data.results ?? []).length > 0);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [ticker]);
+
+  const launch = (tk: string) => {
+    picked.current = tk;
+    setTicker(tk);
+    setOpen(false);
+    void start(tk);
+  };
   const counts = useMemo(() => {
     const c = { complete: 0, working: 0, queued: 0, failed: 0 };
     for (const s of state.sources) c[s.status === "failed" ? "failed" : s.status]++;
@@ -38,25 +72,68 @@ export default function LiveScanPage() {
         className="flex items-end gap-8 px-12 pb-6 pt-10 rule-hairline"
         onSubmit={(e) => {
           e.preventDefault();
-          if (ticker.trim()) void start(ticker);
+          const typed = ticker.trim().toUpperCase();
+          if (!typed) return;
+          const exact = suggestions.find((s) => s.ticker === typed);
+          if (open && suggestions.length > 0 && !exact) launch(suggestions[highlight].ticker);
+          else launch(typed);
         }}
       >
-        <div className="flex-1">
+        <div className="relative flex-1">
           <div className="eyebrow text-rust mb-3" style={{ letterSpacing: "0.16em", color: "var(--color-rust)" }}>
             New scan
           </div>
           <div className="flex max-w-[560px] items-baseline gap-4 border-b-2 border-ink pb-2.5">
             <input
               value={ticker}
-              onChange={(e) => setTicker(e.target.value.toUpperCase())}
-              placeholder="TICKER"
-              aria-label="Ticker to scan"
+              onChange={(e) => {
+                picked.current = null;
+                setTicker(e.target.value.toUpperCase());
+              }}
+              onKeyDown={(e) => {
+                if (!open || suggestions.length === 0) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setHighlight((h) => (h + 1) % suggestions.length);
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setHighlight((h) => (h - 1 + suggestions.length) % suggestions.length);
+                } else if (e.key === "Escape") {
+                  setOpen(false);
+                }
+              }}
+              placeholder="COMPANY OR TICKER"
+              aria-label="Company name or ticker to scan"
+              autoComplete="off"
               className="w-full bg-transparent font-serif text-[40px] font-medium tracking-wide outline-none placeholder:text-hairline"
             />
             <div className="whitespace-nowrap text-[13px] text-muted">
-              {state.company ? `${state.company.name}` : "Enter a ticker, press return"}
+              {state.company ? `${state.company.name}` : "Name or ticker, press return"}
             </div>
           </div>
+          {open && suggestions.length > 0 && (
+            <div
+              className="absolute z-10 max-w-[560px] w-full border border-hairline"
+              style={{ background: "var(--color-panel)", top: "100%" }}
+              role="listbox"
+            >
+              {suggestions.map((hit, i) => (
+                <button
+                  key={hit.ticker}
+                  type="button"
+                  role="option"
+                  aria-selected={i === highlight}
+                  onMouseEnter={() => setHighlight(i)}
+                  onClick={() => launch(hit.ticker)}
+                  className="flex w-full items-baseline gap-3 px-4 py-2.5 text-left rule-hairline"
+                  style={i === highlight ? { background: "var(--color-track)" } : undefined}
+                >
+                  <span className="w-16 text-[13.5px] font-semibold tnum">{hit.ticker}</span>
+                  <span className="text-[12.5px] text-muted">{hit.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="text-right tnum">
           {state.phase === "running" || state.phase === "complete" ? (

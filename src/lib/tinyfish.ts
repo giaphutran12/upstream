@@ -135,3 +135,24 @@ export async function inWaves<T, R>(items: T[], size: number, fn: (item: T, inde
   }
   return results;
 }
+
+// Browser-slot semaphore: only live agent runs are gated (TinyFish plan limit).
+// Code/fetch/search sources never wait — EDGAR shouldn't queue behind a browser.
+const MAX_BROWSERS = 5;
+let activeBrowsers = 0;
+const browserWaiters: (() => void)[] = [];
+
+export async function withBrowserSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (activeBrowsers < MAX_BROWSERS) {
+    activeBrowsers++;
+  } else {
+    await new Promise<void>((release) => browserWaiters.push(release)); // slot handed over directly
+  }
+  try {
+    return await fn();
+  } finally {
+    const next = browserWaiters.shift();
+    if (next) next();
+    else activeBrowsers--;
+  }
+}
