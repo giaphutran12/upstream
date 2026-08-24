@@ -37,10 +37,20 @@ export type ScanDeltas = {
 export async function computeDeltas(sql: Sql, companyId: number, scanId: number): Promise<ScanDeltas> {
   const [current] = await sql`
     select id, direction_score, family_scores from scans where id = ${scanId}`;
-  const [previous] = await sql`
+  // baseline = a scan far enough back to mean something (≥20h), not one from
+  // ten minutes ago; when all history is young, use the earliest scan so the
+  // window is as wide as the data allows
+  let [previous] = await sql`
     select id, direction_score, family_scores, completed_at from scans
     where company_id = ${companyId} and status = 'complete' and id < ${scanId} and direction_score is not null
+      and completed_at < now() - interval '20 hours'
     order by id desc limit 1`;
+  if (!previous) {
+    [previous] = await sql`
+      select id, direction_score, family_scores, completed_at from scans
+      where company_id = ${companyId} and status = 'complete' and id < ${scanId} and direction_score is not null
+      order by id asc limit 1`;
+  }
 
   const currentFamilies = (current?.family_scores ?? {}) as Record<string, { score: number }>;
   const previousFamilies = (previous?.family_scores ?? {}) as Record<string, { score: number }>;

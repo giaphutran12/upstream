@@ -1,4 +1,5 @@
 import type { Sql } from "postgres";
+import { computeCycle } from "./cycle";
 import { computeDeltas, type ScanDeltas } from "./movers";
 
 // The read: three conclusions an analyst opens with — what we found, why it
@@ -15,11 +16,20 @@ export type Takeaway = {
   sources: string[];
 };
 
+// where the company sits in its reporting cycle, and which way it's leaning
+export type CycleCall = {
+  position: string; // "28 days after the 10-Q of Jul 27 · next report expected around Oct 26"
+  early_signals: string; // freshest dated signals, geography/product named when the evidence names it
+  direction: "down" | "up" | "mixed";
+  call: string; // one plain sentence: what this implies into the next report
+};
+
 export async function synthesizeTakeaways(
   sql: Sql,
   opts: { companyId: number; companyName: string; ticker: string; scanId: number },
-): Promise<{ takeaways: Takeaway[]; deltas: ScanDeltas } | null> {
+): Promise<{ takeaways: Takeaway[]; cycle: CycleCall | null; deltas: ScanDeltas } | null> {
   const deltas = await computeDeltas(sql, opts.companyId, opts.scanId);
+  const cycleFrame = await computeCycle(sql, opts.companyId);
 
   const evidence = await sql`
     select quote, family, source_label, published_at from evidence
@@ -51,6 +61,7 @@ export async function synthesizeTakeaways(
     ),
     footprint_changes_since_last_scan: deltas.footprintMoves.slice(0, 12),
     is_first_scan: deltas.previousScanId == null,
+    reporting_cycle: cycleFrame,
     measured_lead_time: leadTime
       ? { lead_days: leadTime.lead_days, narrative: leadTime.narrative, metric: leadTime.signal_metric }
       : null,
@@ -72,8 +83,9 @@ export async function synthesizeTakeaways(
       messages: [
         {
           role: "system",
-          content: `You are an equity research analyst writing the top of a company page. From the scan data provided (all of it measured or verbatim-scraped — nothing else exists), write EXACTLY 3 takeaways. STRICT JSON:
-{"takeaways":[{"finding":"one sentence: the conclusion, stated plainly, with its number(s)","why_it_matters":"one sentence: the business consequence","what_it_changes":"one sentence: what a reader should do or watch differently","sources":["source labels used"]}]}
+          content: `You are an equity research analyst writing the top of a company page. From the scan data provided (all of it measured or verbatim-scraped — nothing else exists), write EXACTLY 3 takeaways plus a reporting-cycle call. STRICT JSON:
+{"takeaways":[{"finding":"one sentence: the conclusion, stated plainly, with its number(s)","why_it_matters":"one sentence: the business consequence","what_it_changes":"one sentence: what a reader should do or watch differently","sources":["source labels used"]}],
+ "cycle":{"position":"one line placing the company in its reporting cycle from reporting_cycle (days since the anchor filing, expected next report date labeled 'expected')","early_signals":"one sentence naming THIS cycle's freshest dated signals — name the geography, store, or product when the evidence names it; if reporting_cycle.freshCount is 0, say no dated signal has landed yet this cycle","direction":"down|up|mixed — the business pressure into the next report, judged ONLY from this cycle's evidence and how the last cycle resolved","call":"one plain sentence a non-finance reader understands: what to expect into the next report and why, calibrated against the last cycle (e.g. the measured lead time, or the fact that similar complaints last cycle did NOT dent the official record — history rhyming counts in both directions)"}}
 Rules:
 - A takeaway is a CONCLUSION, not a report. Test: if the sentence could have been written by reading one source's summary line, it fails. Every finding must JOIN at least two different sources or dimensions (complaint trend × store footprint, hiring mix × leadership timeline, outage reports × review velocity) and state what the combination means for the business.
 - State the conclusion first; numbers arrive as the supporting clause. Never open with "<Source> remains at / shows / reports…".
@@ -82,6 +94,7 @@ Rules:
 - If a measured lead time exists, exactly one takeaway must calibrate today's leading signal against it: the signal family led the last official filing by N days — say what that same family is doing right now and what that implies about where the company is in that cycle.
 - Lead with movement (deltas since the last scan) when it exists; on a first scan, say the baseline is set and what the next scan will resolve.
 - Takeaways are about the company's business — customers, stores, hiring, leadership, operations. The scoring system itself is never the subject; family score moves are supporting color only.
+- cycle.direction is a business-pressure judgment, not a stock call. Ground it in both halves: fresh adverse evidence AND an adversely-resolved last cycle → down; fresh adverse evidence but a last cycle whose official record absorbed similar complaints → up or mixed, and say history is rhyming. No fresh dated evidence → mixed, and say the cycle is quiet so far.
 - Direction-of-business language only. No buy/sell/hold advice, no price targets.
 - sources: only labels present in the data (e.g. "Reddit", "SEC EDGAR", "Company sitemap").`,
         },
@@ -95,7 +108,7 @@ Rules:
     return null;
   }
   const data = (await response.json()) as { choices: { message: { content: string } }[] };
-  let parsed: { takeaways?: Takeaway[] };
+  let parsed: { takeaways?: Takeaway[]; cycle?: CycleCall };
   try {
     parsed = JSON.parse(data.choices[0].message.content);
   } catch {
@@ -110,10 +123,14 @@ Rules:
     console.log("synthesize: model returned no usable takeaways");
     return null;
   }
+  const cycle =
+    parsed.cycle && parsed.cycle.call && ["down", "up", "mixed"].includes(parsed.cycle.direction)
+      ? parsed.cycle
+      : null;
 
   await sql`
-    update scans set takeaways = ${sql.json({ generated_at: new Date().toISOString(), model: MODEL, items: takeaways } as never)}
+    update scans set takeaways = ${sql.json({ generated_at: new Date().toISOString(), model: MODEL, items: takeaways, cycle } as never)}
     where id = ${opts.scanId}`;
-  console.log(`synthesize: scan ${opts.scanId} — ${takeaways.length} takeaways saved`);
-  return { takeaways, deltas };
+  console.log(`synthesize: scan ${opts.scanId} — ${takeaways.length} takeaways saved, cycle call ${cycle ? cycle.direction : "absent"}`);
+  return { takeaways, cycle, deltas };
 }

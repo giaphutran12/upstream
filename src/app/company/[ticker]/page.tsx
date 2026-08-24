@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { TopBar } from "@/components/TopBar";
 import { Sparkline } from "@/components/Sparkline";
 import { Takeaways, type TakeawayRow } from "@/components/Takeaways";
+import { CycleStrip, type CycleCallRow } from "@/components/CycleStrip";
 import { computeDeltas, type ScanDeltas } from "@/lib/movers";
 import { FAMILY_LABELS, FAMILY_WEIGHTS, type Family } from "@/lib/sources";
 
@@ -63,7 +64,9 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
   const previous = deltas?.score.previous ?? null;
   const falling = score != null && (previous != null ? score < previous : score < 50);
 
-  const takeaways = ((scan?.takeaways as { items?: TakeawayRow[]; generated_at?: string } | null)?.items ?? []) as TakeawayRow[];
+  const scanMeta = scan?.takeaways as { items?: TakeawayRow[]; cycle?: CycleCallRow | null; generated_at?: string } | null;
+  const takeaways = (scanMeta?.items ?? []) as TakeawayRow[];
+  const cycleCall = scanMeta?.cycle ?? null;
 
   // movers: metrics with a baseline, largest relative change first — each with
   // its freshest piece of evidence from the same family
@@ -149,10 +152,12 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
 
       {takeaways.length > 0 && (
         <div className="rule-hairline px-12 pb-9 pt-7">
-          <Takeaways
-            items={takeaways}
-            generatedAgo={timeAgo((scan?.takeaways as { generated_at?: string })?.generated_at ?? null)}
-          />
+          <Takeaways items={takeaways} generatedAgo={timeAgo(scanMeta?.generated_at ?? null)} />
+          {cycleCall && (
+            <div className="mt-7">
+              <CycleStrip cycle={cycleCall} />
+            </div>
+          )}
         </div>
       )}
 
@@ -161,7 +166,9 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
           <div className="mb-3.5 flex items-baseline gap-4">
             <h2 className="font-serif text-[26px] font-medium">What moved since the last scan</h2>
             {deltas?.previousScanAt && (
-              <div className="text-xs text-muted tnum">vs scan of {formatDay(deltas.previousScanAt)}</div>
+              <div className="text-xs text-muted tnum">
+                vs scan of {formatDay(deltas.previousScanAt)} · {daysAgoLabel(deltas.previousScanAt)}
+              </div>
             )}
           </div>
           {deltas?.previousScanId == null ? (
@@ -413,6 +420,12 @@ function footprintLabel(dimension: string, key: string) {
 function formatDay(value: string | null) {
   if (!value) return "—";
   return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function daysAgoLabel(value: string) {
+  const days = Math.floor((Date.now() - new Date(value).getTime()) / 86_400_000);
+  if (days < 1) return "earlier today — history is accumulating, the window widens daily";
+  return days === 1 ? "1 day ago" : `${days} days ago`;
 }
 
 function timeAgo(value: string | null) {

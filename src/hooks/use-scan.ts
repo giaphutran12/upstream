@@ -23,6 +23,13 @@ export type TakeawayItem = {
   sources: string[];
 };
 
+export type CycleCallState = {
+  position: string;
+  early_signals: string;
+  direction: "down" | "up" | "mixed";
+  call: string;
+};
+
 export type ScanState = {
   phase: "idle" | "running" | "complete" | "error";
   scanId?: number;
@@ -32,11 +39,12 @@ export type ScanState = {
   provisional: boolean;
   families: Record<string, { score: number; weight: number }>;
   takeaways: TakeawayItem[];
+  cycle: CycleCallState | null;
   startedAt?: number;
   error?: string;
 };
 
-const IDLE: ScanState = { phase: "idle", sources: [], score: null, provisional: true, families: {}, takeaways: [] };
+const IDLE: ScanState = { phase: "idle", sources: [], score: null, provisional: true, families: {}, takeaways: [], cycle: null };
 
 export function useScan() {
   const [state, setState] = useState<ScanState>(IDLE);
@@ -103,6 +111,13 @@ function applyEvent(s: ScanState, e: Record<string, unknown>): ScanState {
           status: "queued" as const,
         })),
       };
+    case "sources_added": {
+      const added = (e.sources as { key: string; label: string; family: string }[]).map((src) => ({
+        ...src,
+        status: "queued" as const,
+      }));
+      return { ...s, sources: [...s.sources, ...added] };
+    }
     case "source_started":
       return patch(s, e.key as string, { status: "working" });
     case "source_progress":
@@ -126,7 +141,7 @@ function applyEvent(s: ScanState, e: Record<string, unknown>): ScanState {
         families: e.families as ScanState["families"],
       };
     case "takeaways":
-      return { ...s, takeaways: e.items as TakeawayItem[] };
+      return { ...s, takeaways: e.items as TakeawayItem[], cycle: (e.cycle as CycleCallState | null) ?? null };
     case "scan_complete":
       return { ...s, phase: "complete", score: e.score as number | null };
     case "scan_error":

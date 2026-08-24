@@ -32,6 +32,8 @@ export type SourceSpec = {
   metricHint?: string;
   /** search-kind: query to run; top results get fetched and normalized */
   searchQuery?: (companyName: string) => string;
+  /** planner-discovered probes: the query and rationale, persisted as the playbook */
+  probeMeta?: { query: string; why: string };
 };
 
 const evidenceShape = `Return STRICT JSON only:

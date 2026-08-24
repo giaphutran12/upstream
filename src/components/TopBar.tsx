@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import { CompanySearch } from "./CompanySearch";
 
 export function TopBar({ active, ticker = "CBRL", now }: { active: "scan" | "company" | "lead"; ticker?: string; now?: string }) {
   const TABS = [
@@ -33,7 +34,10 @@ export function TopBar({ active, ticker = "CBRL", now }: { active: "scan" | "com
           by TinyFish · Primary-source research
         </span>
       </a>
-      <nav className="ml-auto flex gap-7">
+      <div className="ml-auto">
+        <CompanySearch section={active === "lead" ? "lead" : "company"} />
+      </div>
+      <nav className="flex gap-7">
         {TABS.map((tab) => (
           <Link key={tab.key} href={tab.href} className={tab.key === active ? "nav-link nav-link--active" : "nav-link"}>
             {tab.label}

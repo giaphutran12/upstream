@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { TopBar } from "@/components/TopBar";
 import { Takeaways } from "@/components/Takeaways";
+import { CycleStrip } from "@/components/CycleStrip";
 import { useScan, type SourceState } from "@/hooks/use-scan";
 
 const FAMILY_ROWS = [
@@ -175,6 +176,11 @@ export default function LiveScanPage() {
           {state.takeaways.length > 0 && (
             <div className="mb-10">
               <Takeaways items={state.takeaways} />
+              {state.cycle && (
+                <div className="mt-6">
+                  <CycleStrip cycle={state.cycle} />
+                </div>
+              )}
             </div>
           )}
 

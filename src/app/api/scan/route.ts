@@ -6,19 +6,21 @@ import { readEdgar } from "@/lib/edgar";
 import { collectStoreFootprint, collectJobsFootprint, countDeltaRead } from "@/lib/footprint";
 import { directionScore, familyScores } from "@/lib/scoring";
 import { resolveCompany } from "@/lib/resolve";
-import { synthesizeTakeaways, type Takeaway } from "@/lib/synthesize";
+import { planDeepProbes, probeToSpec, type PlaybookEntry } from "@/lib/planner";
+import { synthesizeTakeaways, type CycleCall, type Takeaway } from "@/lib/synthesize";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
 
 type ScanEvent =
   | { type: "scan_created"; scanId: number; company: { id: number; ticker: string; name: string }; sources: { key: string; label: string; family: Family }[] }
+  | { type: "sources_added"; sources: { key: string; label: string; family: Family }[] }
   | { type: "source_started"; key: string }
   | { type: "source_progress"; key: string; purpose: string }
   | { type: "source_streaming"; key: string; streamingUrl: string }
   | { type: "source_complete"; key: string; ok: boolean; durationMs: number; itemsRead: number; note: string | null; error?: string; samples?: { quote: string; source_label: string; published_at: string | null }[] }
   | { type: "score_updated"; score: number | null; provisional: boolean; families: Record<string, { score: number; weight: number }> }
-  | { type: "takeaways"; items: Takeaway[] }
+  | { type: "takeaways"; items: Takeaway[]; cycle: CycleCall | null }
   | { type: "scan_complete"; scanId: number; score: number | null }
   | { type: "scan_error"; message: string };
 
@@ -95,8 +97,9 @@ export async function POST(request: Request) {
           send({ type: "source_started", key: spec.key });
           const urls = spec.urls(profile);
           const [run] = await sql`
-            insert into source_runs (scan_id, source_key, primitive, status, started_at)
-            values (${scan.id}, ${spec.key}, ${spec.kind}, 'running', now()) returning id`;
+            insert into source_runs (scan_id, source_key, primitive, status, started_at, result)
+            values (${scan.id}, ${spec.key}, ${spec.kind}, 'running', now(),
+              ${spec.probeMeta ? sql.json(spec.probeMeta) : null}) returning id`;
           const started = Date.now();
 
           try {
@@ -156,6 +159,14 @@ export async function POST(request: Request) {
             } else if (spec.kind === "code" && spec.key === "edgar") {
               // deterministic path: structured API, code-parsed, zero LLM
               const edgar = await readEdgar(profile.edgarCik!);
+              // periodic reports are the cycle anchors — every listed company has them
+              for (const filing of edgar.filings) {
+                if (!["10-Q", "10-K", "20-F", "40-F"].some((f) => filing.form.startsWith(f))) continue;
+                await sql`
+                  insert into official_events (company_id, event_type, title, occurred_on, url, source, is_key)
+                  values (${company.id}, 'periodic_report', ${`${filing.form} filed`}, ${filing.filedOn}, ${filing.url}, 'sec_edgar', false)
+                  on conflict do nothing`;
+              }
               for (const filing of edgar.leadershipEvents) {
                 await sql`
                   insert into official_events (company_id, event_type, title, occurred_on, url, source, is_key)
@@ -283,8 +294,41 @@ export async function POST(request: Request) {
           });
         };
 
+        // depth planner: an agent decides what "deeper" means for this company,
+        // then the cheap fleet (search+fetch, no browsers) executes it. Playbook
+        // memory comes from past probe runs — repeat what yielded, drop dead ends.
+        const probesDone = (async () => {
+          try {
+            const playbookRows = await sql`
+              select source_runs.source_key, source_runs.result, source_runs.items_read
+              from source_runs join scans on scans.id = source_runs.scan_id
+              where scans.company_id = ${company.id} and source_runs.source_key like 'probe_%'
+                and source_runs.result is not null and source_runs.scan_id <> ${scan.id}
+              order by source_runs.id desc limit 12`;
+            const playbook: PlaybookEntry[] = playbookRows.map((r) => ({
+              label: String(r.source_key).replace(/^probe_/, ""),
+              query: (r.result as { query?: string })?.query ?? "",
+              itemsRead: Number(r.items_read ?? 0),
+            }));
+            const probes = await planDeepProbes({
+              companyName: company.name,
+              ticker: company.ticker,
+              sector: null,
+              knownSources: sources.map((s) => s.label),
+              playbook,
+            });
+            if (probes.length === 0) return;
+            const specs = probes.map(probeToSpec);
+            send({ type: "sources_added", sources: specs.map((s) => ({ key: s.key, label: s.label, family: s.family })) });
+            await Promise.allSettled(specs.map((spec) => runOne(spec)));
+          } catch (err) {
+            console.log(`scan ${scan.id}: depth planner failed because ${err instanceof Error ? err.message : String(err)} — fixed plan continues`);
+          }
+        })();
+
         // everything dispatches at once; only live browser runs contend for the 5 slots
         await Promise.allSettled(sources.map((spec) => runOne(spec)));
+        await probesDone;
 
         const families = familyScores(reads);
         const { score } = directionScore(families);
@@ -298,7 +342,7 @@ export async function POST(request: Request) {
             ticker: company.ticker,
             scanId: scan.id,
           });
-          if (synthesis) send({ type: "takeaways", items: synthesis.takeaways });
+          if (synthesis) send({ type: "takeaways", items: synthesis.takeaways, cycle: synthesis.cycle });
         } catch (err) {
           console.log(`scan ${scan.id}: synthesis failed because ${err instanceof Error ? err.message : String(err)} — scan still completes`);
         }

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { TopBar } from "@/components/TopBar";
 import { MeasureLeadTime } from "@/components/MeasureLeadTime";
+import { CycleStrip, type CycleCallRow } from "@/components/CycleStrip";
 
 export const dynamic = "force-dynamic";
 
@@ -18,34 +19,40 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
   const [read] = await sql`
     select signal_metric, signal_start_on, signal_rule, filed_on, lead_days, narrative, series
     from lead_time_reads where company_id = ${company.id} order by created_at desc limit 1`;
-  if (!read) {
-    return (
-      <main className="min-h-screen">
-        <TopBar active="lead" ticker={company.ticker} />
-        <div className="px-12 py-16">
-          <div className="eyebrow mb-3.5" style={{ color: "var(--color-rust)", letterSpacing: "0.16em" }}>
-            Lead-time analysis · {company.ticker} — {company.name}
-          </div>
-          <h1 className="mb-4 font-serif text-[40px] font-medium leading-[1.05] tracking-tight">No measured lead-time read yet.</h1>
-          <p className="mb-7 max-w-[640px] text-[15px] leading-relaxed text-muted">
-            A read requires a historical signal series and an official filing to pair it with. Both can be gathered from primary
-            sources right now.
-          </p>
-          <MeasureLeadTime ticker={company.ticker} />
-        </div>
-      </main>
-    );
-  }
 
-  const events = (await sql`
-    select distinct on (occurred_on) title, occurred_on, is_key, url from official_events
-    where company_id = ${company.id} and occurred_on >= ${read.signal_start_on}::date - interval '90 days'
-    order by occurred_on asc, is_key desc limit 3`) as unknown as EventMark[];
+  // this cycle, for any company: filings are the anchors, dated evidence is the signal
+  const cycleEvents = await sql`
+    select event_type, title, occurred_on, url from official_events
+    where company_id = ${company.id} and event_type in ('periodic_report', '8k_502')
+      and occurred_on > now() - interval '15 months'
+    order by occurred_on asc`;
+  const datedEvidence = await sql`
+    select published_at, family from evidence
+    where company_id = ${company.id} and published_at is not null
+      and published_at > now() - interval '15 months'
+    order by published_at asc limit 300`;
+  const [latestScan] = await sql`
+    select takeaways from scans
+    where company_id = ${company.id} and status = 'complete' and takeaways is not null
+    order by started_at desc limit 1`;
+  const cycleCall = (latestScan?.takeaways as { cycle?: CycleCallRow | null } | null)?.cycle ?? null;
 
-  const series = read.series as SeriesPoint[];
-  const chart = layoutChart(series, String(read.signal_start_on), String(read.filed_on), events);
-  const startLabel = formatDay(String(read.signal_start_on));
-  const filedLabel = formatDay(String(read.filed_on));
+  const anchor = [...cycleEvents].reverse().find((e) => e.event_type === "periodic_report");
+  const anchorOn = anchor ? isoDay(anchor.occurred_on) : null;
+  const expectedOn = anchorOn ? new Date(Date.parse(anchorOn) + 91 * 86_400_000).toISOString().slice(0, 10) : null;
+  const freshCount = anchorOn ? datedEvidence.filter((e) => isoDay(e.published_at) > anchorOn).length : 0;
+
+  const timeline = layoutCycleTimeline(
+    cycleEvents.map((e) => ({
+      type: String(e.event_type),
+      title: String(e.title),
+      on: isoDay(e.occurred_on),
+      url: e.url as string | null,
+    })),
+    datedEvidence.map((e) => isoDay(e.published_at)),
+    anchorOn,
+    expectedOn,
+  );
 
   return (
     <main className="min-h-screen">
@@ -55,23 +62,129 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
         <div className="eyebrow mb-3.5" style={{ color: "var(--color-rust)", letterSpacing: "0.16em" }}>
           Lead-time analysis · {company.ticker} — {company.name}
         </div>
-        <h1 className="font-serif text-[50px] font-medium leading-[1.05] tracking-tight">
-          Customers turned <span style={{ color: "var(--color-rust)" }}>{read.lead_days} days</span> before the filing.
-        </h1>
-        <div className="mt-4 max-w-[760px] text-[15px] leading-relaxed text-muted">
-          {String(read.signal_metric).replaceAll("_", " ")} began a sustained rise on {startLabel}. The filing reached SEC EDGAR on{" "}
-          {filedLabel} — {read.lead_days} days later. Measured, not modeled.
-        </div>
+        {read ? (
+          <>
+            <h1 className="font-serif text-[50px] font-medium leading-[1.05] tracking-tight">
+              Last cycle, customers turned <span style={{ color: "var(--color-rust)" }}>{read.lead_days} days</span> before the
+              filing. Where is this cycle?
+            </h1>
+            <div className="mt-4 max-w-[760px] text-[15px] leading-relaxed text-muted">
+              {String(read.signal_metric).replaceAll("_", " ")} began a sustained rise on {formatDay(String(read.signal_start_on))};
+              the filing reached EDGAR {read.lead_days} days later. That calibration is the yardstick for the signals arriving now.
+            </div>
+          </>
+        ) : (
+          <>
+            <h1 className="font-serif text-[50px] font-medium leading-[1.05] tracking-tight">This cycle, watched live.</h1>
+            <div className="mt-4 max-w-[760px] text-[15px] leading-relaxed text-muted">
+              Every listed company reports on a cycle. The filings below are its official record; the dots are dated customer
+              evidence collected from primary sources — the signal that precedes the record.
+            </div>
+          </>
+        )}
       </div>
 
-      <div className="px-12 pt-4">
+      <div className="max-w-[1100px] px-12 pt-4">
+        {cycleCall ? (
+          <CycleStrip cycle={cycleCall} />
+        ) : (
+          <div className="card card--queued py-5 text-center text-[13px] text-muted">
+            No cycle call yet — run a scan from the Live scan tab and the read lands here.
+          </div>
+        )}
+      </div>
+
+      {timeline && (
+        <div className="px-12 pt-9">
+          <div className="rule-ink mb-2 flex items-baseline gap-4 pb-2">
+            <div className="eyebrow" style={{ letterSpacing: "0.14em" }}>
+              The reporting cycle · trailing 15 months
+            </div>
+            <div className="text-[11px] text-muted tnum">
+              ■ official filings · ● dated customer evidence{anchorOn ? ` · ${freshCount} signals since the ${formatDay(anchorOn)} report` : ""}
+            </div>
+          </div>
+          <svg viewBox="0 0 1240 200" className="block w-full" role="img"
+            aria-label={`Reporting-cycle timeline for ${company.name}: official filings and dated customer evidence.`}>
+            {timeline.cycleShade && (
+              <rect x={timeline.cycleShade.x0} y={30} width={timeline.cycleShade.x1 - timeline.cycleShade.x0} height={90} fill="var(--color-rust)" opacity={0.05} />
+            )}
+            <line x1={60} y1={120} x2={1180} y2={120} stroke="var(--color-ink)" strokeWidth={1.5} />
+            {timeline.months.map((m) => (
+              <text key={m.label + m.px} x={m.px} y={138} fontSize={10.5} fill="var(--color-muted)">{m.label}</text>
+            ))}
+            {timeline.dots.map((dot, i) => (
+              <circle key={i} cx={dot.px} cy={dot.py} r={3.2}
+                fill={dot.fresh ? "var(--color-rust)" : "var(--color-hairline)"}
+                stroke={dot.fresh ? "none" : "var(--color-muted)"} strokeWidth={dot.fresh ? 0 : 0.5} />
+            ))}
+            {timeline.filings.map((mark, i) => (
+              <g key={i}>
+                <rect x={mark.px - 4} y={116} width={8} height={8} fill={mark.isKey ? "var(--color-rust)" : "var(--color-ink)"} />
+                <line x1={mark.px} y1={124} x2={mark.px} y2={mark.labelY - 10} stroke={mark.isKey ? "var(--color-rust)" : "var(--color-muted)"} strokeWidth={1} />
+                <text x={mark.anchorEnd ? mark.px - 6 : mark.px + 6} y={mark.labelY}
+                  textAnchor={mark.anchorEnd ? "end" : "start"} fontSize={11.5}
+                  fontWeight={mark.isKey ? 600 : 400} fill={mark.isKey ? "var(--color-ink)" : "var(--color-muted)"}>
+                  {mark.label}
+                </text>
+              </g>
+            ))}
+            <line x1={timeline.todayX} y1={34} x2={timeline.todayX} y2={120} stroke="var(--color-ink)" strokeWidth={1} strokeDasharray="2 4" />
+            <text x={timeline.todayX} y={26} textAnchor="middle" fontSize={10.5} fontWeight={600} letterSpacing={2} fill="var(--color-ink)">TODAY</text>
+            {timeline.expectedX != null && (
+              <g>
+                <rect x={timeline.expectedX - 4} y={116} width={8} height={8} fill="none" stroke="var(--color-rust)" strokeWidth={1.5} />
+                <text x={timeline.expectedX + 6} y={106} fontSize={11.5} fontWeight={600} fill="var(--color-rust)">
+                  next report · expected ~{expectedOn ? formatDay(expectedOn) : ""}
+                </text>
+              </g>
+            )}
+          </svg>
+          <div className="rule-hairline max-w-[900px] pt-2.5 text-[11px] leading-normal text-muted" style={{ borderTop: "1px solid var(--color-hairline)", borderBottom: "none" }}>
+            Squares: SEC filings (rust = officer change, 8-K Item 5.02). Dots: customer evidence at its published date — rust dots
+            landed after the latest periodic report, i.e. this cycle. The hollow square is the next report, estimated at 91 days,
+            labeled expected. Evidence accumulates with every scan.
+          </div>
+        </div>
+      )}
+
+      {!timeline && (
+        <div className="max-w-[760px] px-12 pt-9 text-[14px] leading-relaxed text-muted">
+          No filings ingested yet for {company.name} — run a scan from the Live scan tab; SEC EDGAR lands in seconds and this
+          timeline builds itself.
+        </div>
+      )}
+
+      {read ? (
+        <BacktestChart read={read as never} events={(await sql`
+          select distinct on (occurred_on) title, occurred_on, is_key, url from official_events
+          where company_id = ${company.id} and occurred_on >= ${read.signal_start_on}::date - interval '90 days'
+          order by occurred_on asc, is_key desc limit 3`) as unknown as EventMark[]} />
+      ) : (
+        <div className="max-w-[760px] px-12 pb-16 pt-10">
+          <div className="rule-ink mb-3 pb-2">
+            <div className="eyebrow" style={{ letterSpacing: "0.14em" }}>Measure the last cycle</div>
+          </div>
+          <MeasureLeadTime ticker={company.ticker} />
+        </div>
+      )}
+    </main>
+  );
+}
+
+function BacktestChart({ read, events }: { read: { signal_metric: string; signal_start_on: string; signal_rule: string; filed_on: string; lead_days: number; narrative: string; series: SeriesPoint[] }; events: EventMark[] }) {
+  const series = read.series;
+  const chart = layoutChart(series, String(read.signal_start_on), String(read.filed_on), events);
+  const startLabel = formatDay(String(read.signal_start_on));
+  const filedLabel = formatDay(String(read.filed_on));
+  return (
+    <>
+      <div className="px-12 pt-10">
         <div className="rule-ink mb-2 flex items-baseline gap-4 pb-2">
           <div className="eyebrow" style={{ letterSpacing: "0.14em" }}>
-            {String(read.signal_metric).replaceAll("_", " ")}, indexed
+            Last cycle, measured · {String(read.signal_metric).replaceAll("_", " ")}, indexed
           </div>
-          <div className="text-[11px] text-muted tnum">
-            {formatDay(series[0].t)} = 100 · weekly
-          </div>
+          <div className="text-[11px] text-muted tnum">{formatDay(series[0].t)} = 100 · weekly</div>
         </div>
         {/* the signature: measured gap between signal turn and filing */}
         <svg viewBox="0 0 1240 440" className="block w-full" role="img"
@@ -148,8 +261,75 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
           </div>
         </div>
       </div>
-    </main>
+    </>
   );
+}
+
+function layoutCycleTimeline(
+  events: { type: string; title: string; on: string; url: string | null }[],
+  evidenceDates: string[],
+  anchorOn: string | null,
+  expectedOn: string | null,
+) {
+  if (events.length === 0 && evidenceDates.length === 0) return null;
+  const x0 = 60, x1 = 1180;
+  const day = 86_400_000;
+  const today = Date.now();
+  const times = [...events.map((e) => Date.parse(e.on)), ...evidenceDates.map((d) => Date.parse(d)), today];
+  const t0 = Math.min(...times) - 10 * day;
+  const t1 = Math.max(today, expectedOn ? Date.parse(expectedOn) : today) + 14 * day;
+  const xOf = (t: number) => x0 + ((t - t0) / (t1 - t0)) * (x1 - x0);
+
+  const filings = events.map((event, i) => {
+    const px = Math.round(xOf(Date.parse(event.on)));
+    const label =
+      event.type === "8k_502"
+        ? `Officer change (8-K) · ${formatDay(event.on)}`
+        : `${event.title.replace(" filed", "")} · ${formatDay(event.on)}`;
+    return {
+      px,
+      label,
+      isKey: event.type === "8k_502",
+      anchorEnd: px > 960,
+      labelY: 158 + (i % 2) * 20,
+    };
+  });
+
+  // evidence dots stack upward when several land the same week
+  const weekCounts = new Map<number, number>();
+  const dots = evidenceDates.map((d) => {
+    const t = Date.parse(d);
+    const week = Math.floor(t / (7 * day));
+    const stack = weekCounts.get(week) ?? 0;
+    weekCounts.set(week, stack + 1);
+    return {
+      px: Math.round(xOf(t)),
+      py: 104 - Math.min(stack, 6) * 11,
+      fresh: anchorOn != null && d > anchorOn,
+    };
+  });
+
+  const months: { label: string; px: number }[] = [];
+  const cursor = new Date(t0);
+  cursor.setDate(1);
+  while (cursor.getTime() <= t1) {
+    if (cursor.getTime() >= t0) {
+      const px = Math.round(xOf(cursor.getTime()));
+      if (filings.every((f) => Math.abs(f.px - px) > 40)) {
+        months.push({ label: cursor.toLocaleDateString("en-US", { month: "short" }).toUpperCase(), px });
+      }
+    }
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  return {
+    filings,
+    dots,
+    months,
+    todayX: Math.round(xOf(today)),
+    expectedX: expectedOn ? Math.round(xOf(Date.parse(expectedOn))) : null,
+    cycleShade: anchorOn ? { x0: Math.round(xOf(Date.parse(anchorOn))), x1: Math.round(xOf(today)) } : null,
+  };
 }
 
 function layoutChart(series: SeriesPoint[], startOn: string, filedOn: string, events: EventMark[]) {
@@ -204,6 +384,11 @@ function layoutChart(series: SeriesPoint[], startOn: string, filedOn: string, ev
 
 function shorten(s: string, n: number) {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/** postgres returns date columns as JS Dates — String() on those is NOT ISO. */
+function isoDay(value: unknown): string {
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
 }
 
 function formatDay(value: string) {
