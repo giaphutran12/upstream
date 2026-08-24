@@ -1,7 +1,9 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { lookupCik } from "@/lib/resolve";
 import { TopBar } from "@/components/TopBar";
+import { InlineScan } from "@/components/InlineScan";
 import { Sparkline } from "@/components/Sparkline";
 import { Takeaways, type TakeawayRow } from "@/components/Takeaways";
 import { CycleStrip, type CycleCallRow } from "@/components/CycleStrip";
@@ -16,14 +18,22 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
   const { ticker } = await params;
   const sql = db();
 
-  const [company] = await sql`select id, ticker, name, sector from companies where ticker = ${ticker.toUpperCase()}`;
-  // never-scanned ticker: send it to Live scan, which auto-starts the first scan
-  if (!company) redirect(`/?scan=${encodeURIComponent(ticker.toUpperCase())}`);
+  const upper = ticker.toUpperCase();
+  const [company] = await sql`select id, ticker, name, sector from companies where ticker = ${upper}`;
+
+  // never-scanned ticker: this page IS the destination — the first scan runs right here
+  if (!company) {
+    const listed = await lookupCik(upper);
+    if (!listed) notFound();
+    return <FirstScanShell ticker={upper} name={listed.title} />;
+  }
 
   const [scan] = await sql`
     select id, direction_score, provisional, family_scores, takeaways, completed_at, started_at
     from scans where company_id = ${company.id} and status = 'complete'
     order by started_at desc limit 1`;
+
+  if (!scan) return <FirstScanShell ticker={String(company.ticker)} name={String(company.name)} />;
 
   const deltas: ScanDeltas | null = scan ? await computeDeltas(sql, Number(company.id), Number(scan.id)) : null;
 
@@ -103,6 +113,9 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
                 </Link>
               </>
             ) : null}
+          </div>
+          <div className="mt-4">
+            <InlineScan ticker={String(company.ticker)} autoStart={false} />
           </div>
         </div>
         <div>
@@ -399,6 +412,30 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
             Excluded by design: LinkedIn (ToS). Failed sources renormalize out of the score.
           </div>
         </aside>
+      </div>
+    </main>
+  );
+}
+
+/** No read yet: the page renders immediately and the first scan streams in place. */
+function FirstScanShell({ ticker, name }: { ticker: string; name: string }) {
+  return (
+    <main className="min-h-screen">
+      <TopBar active="company" ticker={ticker} />
+      <div className="px-12 pb-8 pt-10">
+        <div className="eyebrow mb-3.5" style={{ color: "var(--color-rust)", letterSpacing: "0.16em" }}>
+          Company read
+        </div>
+        <h1 className="font-serif text-[46px] font-medium leading-[1.05] tracking-tight">{name}</h1>
+        <div className="mt-3.5 text-[13px] text-muted tnum">{ticker} &nbsp;·&nbsp; first scan</div>
+      </div>
+      <div className="max-w-[860px] px-12">
+        <InlineScan ticker={ticker} autoStart />
+        <div className="mt-5 text-[13px] leading-relaxed text-muted">
+          {name} hasn&apos;t been read before. Agents are visiting its primary sources now — customers, employees, filings, its
+          own store infrastructure — and the planner is deciding what &ldquo;deeper&rdquo; means for this company. The three
+          takeaways, the cycle call, and the counted footprint render on this page the moment they land.
+        </div>
       </div>
     </main>
   );

@@ -14,8 +14,8 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
   const sql = db();
 
   const [company] = await sql`select id, ticker, name from companies where ticker = ${ticker.toUpperCase()}`;
-  // never-scanned ticker: send it to Live scan, which auto-starts the first scan
-  if (!company) redirect(`/?scan=${encodeURIComponent(ticker.toUpperCase())}`);
+  // never-scanned ticker: the company page runs the first scan inline
+  if (!company) redirect(`/company/${encodeURIComponent(ticker.toUpperCase())}`);
 
   const [read] = await sql`
     select signal_metric, signal_start_on, signal_rule, filed_on, lead_days, narrative, series
@@ -91,7 +91,7 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
           <CycleStrip cycle={cycleCall} />
         ) : (
           <div className="card card--queued py-5 text-center text-[13px] text-muted">
-            No cycle call yet — run a scan from the Live scan tab and the read lands here.
+            No cycle call yet — <a href={`/company/${company.ticker}`}>open the company read</a>; a fresh scan generates it.
           </div>
         )}
       </div>
@@ -152,8 +152,8 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
 
       {!timeline && (
         <div className="max-w-[760px] px-12 pt-9 text-[14px] leading-relaxed text-muted">
-          No filings ingested yet for {company.name} — run a scan from the Live scan tab; SEC EDGAR lands in seconds and this
-          timeline builds itself.
+          No filings ingested yet for {company.name} — <a href={`/company/${company.ticker}`}>open the company read</a>; SEC
+          EDGAR lands in seconds and this timeline builds itself.
         </div>
       )}
 

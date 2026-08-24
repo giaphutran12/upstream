@@ -52,7 +52,7 @@ Only include values actually evidenced by the results; null otherwise.`,
   return { name: cikEntry.title, exchange: null, profile };
 }
 
-async function lookupCik(ticker: string): Promise<{ cik: number; title: string } | null> {
+export async function lookupCik(ticker: string): Promise<{ cik: number; title: string } | null> {
   const response = await fetch("https://www.sec.gov/files/company_tickers.json", {
     headers: { "User-Agent": "Upstream research demo contact@tinyfish.ai" },
     cache: "force-cache",
