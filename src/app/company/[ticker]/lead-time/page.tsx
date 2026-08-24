@@ -27,7 +27,7 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
     where company_id = ${company.id} and event_type in ('periodic_report', '8k_502')
       and occurred_on > now() - interval '15 months'
     order by event_type, occurred_on asc`;
-  cycleEvents.sort((a, b) => String(a.occurred_on).localeCompare(String(b.occurred_on)));
+  cycleEvents.sort((a, b) => new Date(a.occurred_on as string).getTime() - new Date(b.occurred_on as string).getTime());
   const datedEvidence = await sql`
     select published_at, family from evidence
     where company_id = ${company.id} and published_at is not null
