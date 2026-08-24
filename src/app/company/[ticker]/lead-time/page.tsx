@@ -42,6 +42,9 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
   const anchor = [...cycleEvents].reverse().find((e) => e.event_type === "periodic_report");
   const anchorOn = anchor ? isoDay(anchor.occurred_on) : null;
   const expectedOn = anchorOn ? new Date(Date.parse(anchorOn) + 91 * 86_400_000).toISOString().slice(0, 10) : null;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const daysSinceAnchor = anchorOn ? Math.floor((Date.now() - Date.parse(anchorOn)) / 86_400_000) : null;
+  const daysUntilExpected = expectedOn ? Math.ceil((Date.parse(expectedOn) - Date.now()) / 86_400_000) : null;
   const freshCount = anchorOn ? datedEvidence.filter((e) => isoDay(e.published_at) > anchorOn).length : 0;
 
   const timeline = layoutCycleTimeline(
@@ -51,9 +54,14 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
       on: isoDay(e.occurred_on),
       url: e.url as string | null,
     })),
-    datedEvidence.map((e) => isoDay(e.published_at)),
+    // future-dated announcements (a layoff effective next month) stay in evidence
+    // but never plot right of TODAY — the chart is the record so far
+    datedEvidence.map((e) => isoDay(e.published_at)).filter((d) => d <= todayIso),
     anchorOn,
     expectedOn,
+    expectedOn
+      ? `next report · expected ~${formatDay(expectedOn)}${daysUntilExpected != null && daysUntilExpected >= 0 ? ` · in ${daysUntilExpected} days` : ""}`
+      : null,
   );
 
   return (
@@ -103,7 +111,9 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
               The reporting cycle · trailing 15 months
             </div>
             <div className="text-[11px] text-muted tnum">
-              ■ official filings · ● dated customer evidence{anchorOn ? ` · ${freshCount} signals since the ${formatDay(anchorOn)} report` : ""}
+              ■ SEC filing (<span style={{ color: "var(--color-rust)" }}>rust</span> = officer change) · ● customer evidence at
+              its own date (<span style={{ color: "var(--color-rust)" }}>rust</span> = this cycle, gray = before the last
+              report) · □ expected next report
             </div>
           </div>
           <svg viewBox="0 0 1240 280" className="block w-full" role="img"
@@ -122,31 +132,48 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
             ))}
             {timeline.filings.map((mark, i) => (
               <g key={i}>
-                <rect x={mark.px - 4} y={116} width={8} height={8} fill={mark.isKey ? "var(--color-rust)" : "var(--color-ink)"} />
-                <line x1={mark.px} y1={124} x2={mark.px} y2={mark.labelY - 10} stroke={mark.isKey ? "var(--color-rust)" : "var(--color-muted)"} strokeWidth={1} />
+                {mark.expected ? (
+                  <rect x={mark.px - 4} y={116} width={8} height={8} fill="none" stroke="var(--color-rust)" strokeWidth={1.5} />
+                ) : (
+                  <rect x={mark.px - 4} y={116} width={8} height={8} fill={mark.isKey ? "var(--color-rust)" : "var(--color-ink)"} />
+                )}
+                <line x1={mark.px} y1={124} x2={mark.px} y2={mark.labelY - 10} stroke={mark.isKey || mark.expected ? "var(--color-rust)" : "var(--color-muted)"} strokeWidth={1} opacity={mark.expected ? 0.7 : 1} />
                 <text x={mark.anchorEnd ? mark.px - 6 : mark.px + 6} y={mark.labelY}
                   textAnchor={mark.anchorEnd ? "end" : "start"} fontSize={11.5}
-                  fontWeight={mark.isKey ? 600 : 400} fill={mark.isKey ? "var(--color-ink)" : "var(--color-muted)"}>
+                  fontWeight={mark.isKey || mark.expected ? 600 : 400}
+                  fill={mark.expected ? "var(--color-rust)" : mark.isKey ? "var(--color-ink)" : "var(--color-muted)"}>
                   {mark.label}
                 </text>
               </g>
             ))}
             <line x1={timeline.todayX} y1={34} x2={timeline.todayX} y2={120} stroke="var(--color-ink)" strokeWidth={1} strokeDasharray="2 4" />
-            <text x={timeline.todayX} y={26} textAnchor="middle" fontSize={10.5} fontWeight={600} letterSpacing={2} fill="var(--color-ink)">TODAY</text>
+            {timeline.cycleShade && (
+              (() => {
+                const { x0, x1 } = timeline.cycleShade;
+                const wide = x1 - x0 >= 250;
+                const label = `THIS CYCLE · ${freshCount} SIGNAL${freshCount === 1 ? "" : "S"} · ${daysSinceAnchor} DAYS → TODAY`;
+                return (
+                  <g>
+                    <line x1={x0} y1={30} x2={x1} y2={30} stroke="var(--color-rust)" strokeWidth={1.5} />
+                    <line x1={x0} y1={24} x2={x0} y2={36} stroke="var(--color-rust)" strokeWidth={1.5} />
+                    <line x1={x1} y1={24} x2={x1} y2={36} stroke="var(--color-rust)" strokeWidth={1.5} />
+                    <text
+                      x={wide ? (x0 + x1) / 2 : x0 - 10}
+                      y={wide ? 21 : 33}
+                      textAnchor={wide ? "middle" : "end"}
+                      fontSize={10.5}
+                      fontWeight={600}
+                      letterSpacing={1.5}
+                      fill="var(--color-rust)"
+                    >
+                      {label}
+                    </text>
+                  </g>
+                );
+              })()
+            )}
             {timeline.expectedX != null && (
-              <g>
-                <rect x={timeline.expectedX - 4} y={116} width={8} height={8} fill="none" stroke="var(--color-rust)" strokeWidth={1.5} />
-                <text
-                  x={timeline.expectedX > 990 ? timeline.expectedX - 8 : timeline.expectedX + 6}
-                  y={106}
-                  textAnchor={timeline.expectedX > 990 ? "end" : "start"}
-                  fontSize={11.5}
-                  fontWeight={600}
-                  fill="var(--color-rust)"
-                >
-                  next report · expected ~{expectedOn ? formatDay(expectedOn) : ""}
-                </text>
-              </g>
+              <line x1={timeline.expectedX} y1={52} x2={timeline.expectedX} y2={116} stroke="var(--color-rust)" strokeWidth={1} strokeDasharray="2 4" opacity={0.6} />
             )}
           </svg>
           <div className="rule-hairline max-w-[900px] pt-2.5 text-[11px] leading-normal text-muted" style={{ borderTop: "1px solid var(--color-hairline)", borderBottom: "none" }}>
@@ -279,6 +306,7 @@ function layoutCycleTimeline(
   evidenceDates: string[],
   anchorOn: string | null,
   expectedOn: string | null,
+  expectedLabel: string | null,
 ) {
   if (events.length === 0 && evidenceDates.length === 0) return null;
   const x0 = 60, x1 = 1180;
@@ -290,20 +318,25 @@ function layoutCycleTimeline(
   const xOf = (t: number) => x0 + ((t - t0) / (t1 - t0)) * (x1 - x0);
 
   // greedy lane layout: each label drops to the first lane where it fits,
-  // so filings that land close together never overprint each other
+  // so filings that land close together never overprint each other. The
+  // expected-report label rides the same lanes — below the axis, no dots there.
   const laneEnds: number[] = [];
-  const filings = events
-    .map((event) => {
-      const px = Math.round(xOf(Date.parse(event.on)));
-      const label =
-        event.type === "8k_502"
-          ? `Officer change (8-K) · ${formatDay(event.on)}`
-          : `${event.title.replace(" filed", "")} · ${formatDay(event.on)}`;
-      return { px, label, isKey: event.type === "8k_502", anchorEnd: px > 960 };
-    })
+  const marks = events.map((event) => {
+    const px = Math.round(xOf(Date.parse(event.on)));
+    const label =
+      event.type === "8k_502"
+        ? `Officer change (8-K) · ${formatDay(event.on)}`
+        : `${event.title.replace(" filed", "")} · ${formatDay(event.on)}`;
+    return { px, label, isKey: event.type === "8k_502", expected: false, anchorEnd: px > 960 };
+  });
+  if (expectedOn && expectedLabel) {
+    const px = Math.round(xOf(Date.parse(expectedOn)));
+    marks.push({ px, label: expectedLabel, isKey: false, expected: true, anchorEnd: px > 860 });
+  }
+  const filings = marks
     .sort((a, b) => a.px - b.px)
     .map((mark) => {
-      const width = mark.label.length * (mark.isKey ? 7.4 : 6.4) + 16;
+      const width = mark.label.length * (mark.isKey || mark.expected ? 7.4 : 6.4) + 16;
       const start = mark.anchorEnd ? mark.px - width : mark.px;
       const end = mark.anchorEnd ? mark.px : mark.px + width;
       let lane = laneEnds.findIndex((laneEnd) => start > laneEnd);
@@ -325,7 +358,8 @@ function layoutCycleTimeline(
     weekCounts.set(week, stack + 1);
     return {
       px: Math.round(xOf(t)),
-      py: 104 - Math.min(stack, 6) * 11,
+      // stacks cap at 5 rows so dots never climb into the annotation band up top
+      py: 104 - Math.min(stack, 4) * 11,
       fresh: anchorOn != null && d > anchorOn,
     };
   });
