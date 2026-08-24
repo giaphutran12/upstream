@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { TopBar } from "@/components/TopBar";
+import { Takeaways } from "@/components/Takeaways";
 import { useScan, type SourceState } from "@/hooks/use-scan";
 
 const FAMILY_ROWS = [
@@ -93,6 +94,12 @@ export default function LiveScanPage() {
               </div>
             )}
           </div>
+
+          {state.takeaways.length > 0 && (
+            <div className="mb-10">
+              <Takeaways items={state.takeaways} />
+            </div>
+          )}
 
           {findings.length > 0 && (
             <div>

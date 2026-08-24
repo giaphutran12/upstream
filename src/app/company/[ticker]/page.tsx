@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { TopBar } from "@/components/TopBar";
 import { Sparkline } from "@/components/Sparkline";
+import { Takeaways, type TakeawayRow } from "@/components/Takeaways";
+import { computeDeltas, type ScanDeltas } from "@/lib/movers";
 import { FAMILY_LABELS, FAMILY_WEIGHTS, type Family } from "@/lib/sources";
 
 export const dynamic = "force-dynamic";
@@ -17,16 +19,11 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
   if (!company) notFound();
 
   const [scan] = await sql`
-    select id, direction_score, provisional, family_scores, completed_at, started_at
+    select id, direction_score, provisional, family_scores, takeaways, completed_at, started_at
     from scans where company_id = ${company.id} and status = 'complete'
     order by started_at desc limit 1`;
 
-  const [previousScan] = scan
-    ? await sql`
-        select direction_score, started_at from scans
-        where company_id = ${company.id} and status = 'complete' and id < ${scan.id} and direction_score is not null
-        order by started_at desc limit 1`
-    : [];
+  const deltas: ScanDeltas | null = scan ? await computeDeltas(sql, Number(company.id), Number(scan.id)) : null;
 
   const metrics = scan
     ? await sql`
@@ -46,6 +43,12 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
         order by published_at desc nulls last limit 12`
     : [];
 
+  const counts = scan
+    ? await sql`
+        select dimension, key, count from footprint_counts
+        where scan_id = ${scan.id} order by count desc`
+    : [];
+
   const runs = scan
     ? await sql`
         select source_key, status, duration_ms, items_read, completed_at, error
@@ -57,8 +60,23 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
 
   const families = (scan?.family_scores ?? {}) as Partial<Record<Family, { score: number }>>;
   const score = scan?.direction_score != null ? Number(scan.direction_score) : null;
-  const previous = previousScan?.direction_score != null ? Number(previousScan.direction_score) : null;
+  const previous = deltas?.score.previous ?? null;
   const falling = score != null && (previous != null ? score < previous : score < 50);
+
+  const takeaways = ((scan?.takeaways as { items?: TakeawayRow[]; generated_at?: string } | null)?.items ?? []) as TakeawayRow[];
+
+  // movers: metrics with a baseline, largest relative change first — each with
+  // its freshest piece of evidence from the same family
+  const movers = (deltas?.metrics ?? [])
+    .filter((m) => m.deltaPct != null && Math.abs(m.deltaPct) >= 0.5)
+    .sort((a, b) => Math.abs(b.deltaPct!) - Math.abs(a.deltaPct!));
+  const evidenceForFamily = (family: string) => evidence.find((e) => e.family === family);
+
+  const deltaByStateKey = new Map((deltas?.footprintMoves ?? []).map((m) => [`${m.dimension} ${m.key}`, m.delta]));
+  const storeRows = counts.filter((c) => c.dimension === "stores_by_state").slice(0, 12);
+  const jobRows = counts.filter((c) => c.dimension === "jobs_by_department").slice(0, 8);
+  const storeTotal = deltas?.footprintTotals["stores_by_state"];
+  const jobTotal = deltas?.footprintTotals["jobs_by_department"];
 
   return (
     <main className="min-h-screen">
@@ -129,8 +147,165 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
         </div>
       </div>
 
+      {takeaways.length > 0 && (
+        <div className="rule-hairline px-12 pb-9 pt-7">
+          <Takeaways
+            items={takeaways}
+            generatedAgo={timeAgo((scan?.takeaways as { generated_at?: string })?.generated_at ?? null)}
+          />
+        </div>
+      )}
+
       <div className="grid grid-cols-[1fr_292px] gap-11 px-12 pb-14 pt-8 max-lg:grid-cols-1">
         <div>
+          <div className="mb-3.5 flex items-baseline gap-4">
+            <h2 className="font-serif text-[26px] font-medium">What moved since the last scan</h2>
+            {deltas?.previousScanAt && (
+              <div className="text-xs text-muted tnum">vs scan of {formatDay(deltas.previousScanAt)}</div>
+            )}
+          </div>
+          {deltas?.previousScanId == null ? (
+            <div className="card card--queued mb-11 py-6 text-center text-[13px] text-muted">
+              First scan on record — the baseline is set. Movement shows here from the next run; every scan accumulates.
+            </div>
+          ) : (
+            <div className="mb-11">
+              <div className="rule-ink grid grid-cols-[200px_210px_1fr] gap-x-5 pb-2">
+                <div className="eyebrow" style={{ letterSpacing: "0.12em" }}>Signal</div>
+                <div className="eyebrow" style={{ letterSpacing: "0.12em" }}>Move</div>
+                <div className="eyebrow" style={{ letterSpacing: "0.12em" }}>The evidence behind it</div>
+              </div>
+              {movers.map((m) => {
+                const ev = evidenceForFamily(m.family);
+                const upIsBad = ["reddit", "downdetector"].includes(m.metricKey);
+                const bad = upIsBad ? m.deltaPct! > 0 : m.deltaPct! < 0;
+                return (
+                  <div key={m.metricKey} className="rule-hairline grid grid-cols-[200px_210px_1fr] items-baseline gap-x-5 py-3.5">
+                    <div className="text-[13px] font-semibold capitalize">{m.metricKey.replaceAll("_", " ")}</div>
+                    <div className="text-[13px] tnum">
+                      {fmt(m.previous)} → {fmt(m.current)}
+                      {m.unit ? <span className="text-muted"> {m.unit}</span> : null}{" "}
+                      <span className={bad ? "delta-bad" : "font-semibold"}>
+                        ({m.deltaPct! >= 0 ? "+" : ""}
+                        {m.deltaPct}%)
+                      </span>
+                    </div>
+                    <div className="text-[12.5px] text-muted">
+                      {ev ? <>“{clip(String(ev.quote), 110)}” — {ev.source_label}</> : m.sources ?? "counted in code"}
+                    </div>
+                  </div>
+                );
+              })}
+              {deltas.footprintMoves.slice(0, 6).map((m) => (
+                <div key={`${m.dimension}-${m.key}`} className="rule-hairline grid grid-cols-[200px_210px_1fr] items-baseline gap-x-5 py-3.5">
+                  <div className="text-[13px] font-semibold">{footprintLabel(m.dimension, m.key)}</div>
+                  <div className="text-[13px] tnum">
+                    {fmt(m.previous)} → {fmt(m.current ?? 0)}{" "}
+                    <span className={m.delta < 0 ? "delta-bad" : "font-semibold"}>
+                      ({m.delta >= 0 ? "+" : ""}
+                      {m.delta})
+                    </span>
+                  </div>
+                  <div className="text-[12.5px] text-muted">counted from the company’s own {m.dimension.startsWith("stores") ? "sitemap" : "ATS board"} — no model in the loop</div>
+                </div>
+              ))}
+              {movers.length === 0 && deltas.footprintMoves.length === 0 && (
+                <div className="rule-hairline py-4 text-[13px] text-muted">
+                  Nothing moved between the last two scans — that is itself a read.
+                </div>
+              )}
+            </div>
+          )}
+
+          {(storeRows.length > 0 || jobRows.length > 0) && (
+            <div className="mb-11">
+              <div className="mb-3.5 flex items-baseline gap-4">
+                <h2 className="font-serif text-[26px] font-medium">Counted at scale</h2>
+                <div className="text-xs text-muted">Enumerated live from the company’s own infrastructure, counted in code.</div>
+              </div>
+              <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1">
+                {storeRows.length > 0 && (
+                  <div className="card">
+                    <div className="eyebrow mb-2.5 text-muted" style={{ letterSpacing: "0.14em" }}>
+                      Locations by state
+                    </div>
+                    <div className="text-[30px] font-semibold leading-none tnum">
+                      {storeTotal?.current.toLocaleString()}
+                      <span className="text-sm font-normal text-muted"> locations</span>
+                      {storeTotal?.previous != null && storeTotal.current !== storeTotal.previous && (
+                        <span className={storeTotal.current < storeTotal.previous ? "delta-bad text-sm" : "text-sm font-semibold"}>
+                          {" "}
+                          ({storeTotal.current - storeTotal.previous >= 0 ? "+" : ""}
+                          {storeTotal.current - storeTotal.previous} vs last scan)
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-4 grid grid-cols-3 gap-x-4 gap-y-1.5">
+                      {storeRows.map((row) => {
+                        const delta = deltaByStateKey.get(`stores_by_state ${row.key}`);
+                        return (
+                          <div key={String(row.key)} className="flex items-baseline justify-between text-[12.5px] tnum">
+                            <span>{row.key}</span>
+                            <span>
+                              <strong>{row.count}</strong>
+                              {delta != null && (
+                                <span className={delta < 0 ? "delta-bad" : "font-semibold"}>
+                                  {" "}
+                                  {delta >= 0 ? "+" : ""}
+                                  {delta}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="card-footer tnum">Top {storeRows.length} states · every store page enumerated from the location sitemap</div>
+                  </div>
+                )}
+                {jobRows.length > 0 && (
+                  <div className="card">
+                    <div className="eyebrow mb-2.5 text-muted" style={{ letterSpacing: "0.14em" }}>
+                      Open roles by department
+                    </div>
+                    <div className="text-[30px] font-semibold leading-none tnum">
+                      {jobTotal?.current.toLocaleString()}
+                      <span className="text-sm font-normal text-muted"> open</span>
+                      {jobTotal?.previous != null && jobTotal.current !== jobTotal.previous && (
+                        <span className={jobTotal.current < jobTotal.previous ? "delta-bad text-sm" : "text-sm font-semibold"}>
+                          {" "}
+                          ({jobTotal.current - jobTotal.previous >= 0 ? "+" : ""}
+                          {jobTotal.current - jobTotal.previous} vs last scan)
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-4 grid gap-y-1.5">
+                      {jobRows.map((row) => {
+                        const delta = deltaByStateKey.get(`jobs_by_department ${row.key}`);
+                        return (
+                          <div key={String(row.key)} className="flex items-baseline justify-between text-[12.5px] tnum">
+                            <span>{row.key}</span>
+                            <span>
+                              <strong>{row.count}</strong>
+                              {delta != null && (
+                                <span className={delta < 0 ? "delta-bad" : "font-semibold"}>
+                                  {" "}
+                                  {delta >= 0 ? "+" : ""}
+                                  {delta}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="card-footer tnum">Counted from the public ATS board API</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="mb-11 grid grid-cols-2 gap-5 max-md:grid-cols-1">
             {metrics.map((metric) => (
               <div key={metric.metric_key} className="card">
@@ -160,7 +335,7 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
           </div>
 
           <div className="mb-3.5 flex items-baseline gap-4">
-            <h2 className="font-serif text-[26px] font-medium">Evidence, verbatim</h2>
+            <h2 className="font-serif text-[26px] font-medium">Supporting evidence, verbatim</h2>
             <div className="text-xs text-muted">Every quote links to its source and its scrape.</div>
           </div>
           <div className="rule-ink grid grid-cols-[1fr_210px_82px_118px] gap-x-5 pb-2">
@@ -219,6 +394,20 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
       </div>
     </main>
   );
+}
+
+function fmt(n: number | null) {
+  return n == null ? "—" : Number(n).toLocaleString();
+}
+
+function clip(s: string, max: number) {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
+function footprintLabel(dimension: string, key: string) {
+  if (dimension === "stores_by_state") return `${key} locations`;
+  if (dimension === "jobs_by_department") return `${key} roles`;
+  return `${key} roles`;
 }
 
 function formatDay(value: string | null) {

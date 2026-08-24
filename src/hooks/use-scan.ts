@@ -16,6 +16,13 @@ export type SourceState = {
   samples?: { quote: string; source_label: string; published_at: string | null }[];
 };
 
+export type TakeawayItem = {
+  finding: string;
+  why_it_matters: string;
+  what_it_changes: string;
+  sources: string[];
+};
+
 export type ScanState = {
   phase: "idle" | "running" | "complete" | "error";
   scanId?: number;
@@ -24,11 +31,12 @@ export type ScanState = {
   score: number | null;
   provisional: boolean;
   families: Record<string, { score: number; weight: number }>;
+  takeaways: TakeawayItem[];
   startedAt?: number;
   error?: string;
 };
 
-const IDLE: ScanState = { phase: "idle", sources: [], score: null, provisional: true, families: {} };
+const IDLE: ScanState = { phase: "idle", sources: [], score: null, provisional: true, families: {}, takeaways: [] };
 
 export function useScan() {
   const [state, setState] = useState<ScanState>(IDLE);
@@ -117,6 +125,8 @@ function applyEvent(s: ScanState, e: Record<string, unknown>): ScanState {
         provisional: e.provisional as boolean,
         families: e.families as ScanState["families"],
       };
+    case "takeaways":
+      return { ...s, takeaways: e.items as TakeawayItem[] };
     case "scan_complete":
       return { ...s, phase: "complete", score: e.score as number | null };
     case "scan_error":

@@ -95,6 +95,25 @@ create table if not exists official_events (
   unique (company_id, event_type, occurred_on, title)
 );
 
+-- post-scan synthesis: the three takeaways an analyst would open with
+-- {generated_at, model, items:[{finding, why_it_matters, what_it_changes, sources:[]}]}
+alter table scans add column if not exists takeaways jsonb;
+
+-- counted-at-scale facts: one row per (dimension, key) per scan.
+-- deterministic counts (sitemap enumeration, ATS JSON) — deltas between scans
+-- are the product ("3 fewer TN locations"), so history is kept per scan.
+create table if not exists footprint_counts (
+  id          bigint generated always as identity primary key,
+  company_id  bigint not null references companies(id),
+  scan_id     bigint not null references scans(id),
+  dimension   text not null,               -- stores_by_state | jobs_by_department | jobs_by_market
+  key         text not null,               -- 'TN' | 'Engineering' | 'Remote'
+  count       integer not null,
+  scraped_at  timestamptz not null default now()
+);
+create index if not exists footprint_counts_scan_idx on footprint_counts (scan_id);
+create index if not exists footprint_counts_history_idx on footprint_counts (company_id, dimension, key, scraped_at desc);
+
 -- measured lead-time reads: the product's headline claim, stored not derived-on-the-fly
 create table if not exists lead_time_reads (
   id               bigint generated always as identity primary key,

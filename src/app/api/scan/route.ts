@@ -3,8 +3,10 @@ import { fetchPages, inWaves, runAgent, searchWeb } from "@/lib/tinyfish";
 import { plannedSources, FAMILY_WEIGHTS, type Family, type SourceProfile, type SourceSpec } from "@/lib/sources";
 import { normalizeSource, verifyQuotes } from "@/lib/normalize";
 import { readEdgar } from "@/lib/edgar";
+import { collectStoreFootprint, collectJobsFootprint, countDeltaRead } from "@/lib/footprint";
 import { directionScore, familyScores } from "@/lib/scoring";
 import { resolveCompany } from "@/lib/resolve";
+import { synthesizeTakeaways, type Takeaway } from "@/lib/synthesize";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -16,6 +18,7 @@ type ScanEvent =
   | { type: "source_streaming"; key: string; streamingUrl: string }
   | { type: "source_complete"; key: string; ok: boolean; durationMs: number; itemsRead: number; note: string | null; error?: string; samples?: { quote: string; source_label: string; published_at: string | null }[] }
   | { type: "score_updated"; score: number | null; provisional: boolean; families: Record<string, { score: number; weight: number }> }
+  | { type: "takeaways"; items: Takeaway[] }
   | { type: "scan_complete"; scanId: number; score: number | null }
   | { type: "scan_error"; message: string };
 
@@ -103,7 +106,54 @@ export async function POST(request: Request) {
             let runId: string | undefined;
             let samples: { quote: string; source_label: string; published_at: string | null }[] = [];
 
-            if (spec.kind === "code" && spec.key === "edgar") {
+            if (spec.kind === "code" && spec.key === "store_footprint") {
+              // counted, not read: robots.txt → location sitemap → per-state counts in code
+              const footprint = await collectStoreFootprint(profile.companyDomain!);
+              if (!footprint) throw new Error("no enumerable location sitemap on the company domain");
+              for (const [state, count] of Object.entries(footprint.byState)) {
+                await sql`
+                  insert into footprint_counts (company_id, scan_id, dimension, key, count)
+                  values (${company.id}, ${scan.id}, 'stores_by_state', ${state}, ${count})`;
+              }
+              const [prior] = await sql`
+                select value from signal_metrics
+                where company_id = ${company.id} and metric_key = 'store_locations' and scan_id <> ${scan.id}
+                order by scraped_at desc limit 1`;
+              familyRead = countDeltaRead(prior ? Number(prior.value) : null, footprint.total);
+              await sql`
+                insert into signal_metrics (company_id, scan_id, metric_key, family, value, unit, baseline_label, sources)
+                values (${company.id}, ${scan.id}, 'store_locations', 'ops', ${footprint.total}, 'locations', ${footprint.note}, 'Company sitemap')`;
+              itemsRead = footprint.total;
+              note = footprint.note;
+              console.log(`scan ${scan.id}: store footprint counted ${footprint.total} locations in ${Object.keys(footprint.byState).length} states from ${footprint.sitemapUrl}`);
+            } else if (spec.key === "careers" && profile.atsBoard) {
+              // ATS boards are public JSON — counted by department and market in code, no agent
+              const jobs = await collectJobsFootprint(profile.atsBoard);
+              // store every key so per-dimension sums equal the real total; 200 is a runaway guard
+              const topOf = (counts: Record<string, number>) =>
+                Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 200);
+              for (const [dept, count] of topOf(jobs.byDepartment)) {
+                await sql`
+                  insert into footprint_counts (company_id, scan_id, dimension, key, count)
+                  values (${company.id}, ${scan.id}, 'jobs_by_department', ${dept}, ${count})`;
+              }
+              for (const [market, count] of topOf(jobs.byMarket)) {
+                await sql`
+                  insert into footprint_counts (company_id, scan_id, dimension, key, count)
+                  values (${company.id}, ${scan.id}, 'jobs_by_market', ${market}, ${count})`;
+              }
+              const [prior] = await sql`
+                select value from signal_metrics
+                where company_id = ${company.id} and metric_key = 'careers' and scan_id <> ${scan.id}
+                order by scraped_at desc limit 1`;
+              familyRead = countDeltaRead(prior ? Number(prior.value) : null, jobs.total);
+              await sql`
+                insert into signal_metrics (company_id, scan_id, metric_key, family, value, unit, baseline_label, sources)
+                values (${company.id}, ${scan.id}, 'careers', 'workforce', ${jobs.total}, 'open', ${jobs.note}, 'ATS board API')`;
+              itemsRead = jobs.total;
+              note = jobs.note;
+              console.log(`scan ${scan.id}: careers counted ${jobs.total} roles across ${Object.keys(jobs.byDepartment).length} departments from the ${profile.atsBoard.kind} API`);
+            } else if (spec.kind === "code" && spec.key === "edgar") {
               // deterministic path: structured API, code-parsed, zero LLM
               const edgar = await readEdgar(profile.edgarCik!);
               for (const filing of edgar.leadershipEvents) {
@@ -236,6 +286,20 @@ export async function POST(request: Request) {
         const families = familyScores(reads);
         const { score } = directionScore(families);
         await sql`update scans set status = 'complete', completed_at = now() where id = ${scan.id}`;
+
+        // synthesis: three conclusions from this scan's own data — the page's lead
+        try {
+          const synthesis = await synthesizeTakeaways(sql, {
+            companyId: company.id,
+            companyName: company.name,
+            ticker: company.ticker,
+            scanId: scan.id,
+          });
+          if (synthesis) send({ type: "takeaways", items: synthesis.takeaways });
+        } catch (err) {
+          console.log(`scan ${scan.id}: synthesis failed because ${err instanceof Error ? err.message : String(err)} — scan still completes`);
+        }
+
         console.log(`scan ${scan.id}: complete, direction score ${score}`);
         send({ type: "scan_complete", scanId: scan.id, score });
       } catch (err) {

@@ -45,7 +45,22 @@ const companies = [
       companyDomain: "etsy.com",
       appStoreUrl: "https://apps.apple.com/us/app/etsy-shop-custom-gifts/id477128284",
       googlePlayUrl: "https://play.google.com/store/apps/details?id=com.etsy.android",
-      atsBoard: { kind: "greenhouse", slug: "etsy" },
+      // Etsy moved off Greenhouse to Workday (checked 2026-08-24) — agent reads the careers site
+      careersUrl: "https://careers.etsy.com/jobs/search",
+    },
+  },
+  {
+    ticker: "DASH",
+    name: "DoorDash, Inc.",
+    sector: "Local delivery marketplace",
+    profile: {
+      subreddits: ["doordash", "doordash_drivers"],
+      trustpilotDomain: "doordash.com",
+      companyDomain: "doordash.com",
+      appStoreUrl: "https://apps.apple.com/us/app/doordash-food-delivery/id719972451",
+      googlePlayUrl: "https://play.google.com/store/apps/details?id=com.dd.doordash",
+      atsBoard: { kind: "greenhouse", slug: "doordashusa" },
+      downdetectorSlug: "doordash",
     },
   },
   {

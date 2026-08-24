@@ -80,3 +80,13 @@ Per family: evidence normalized by LLM (GPT-5 for classification/sentiment; Fire
 - Live scan + Company Read + Lead-Time Timeline for a curated six: CBRL (pre-seeded backtest), ETSY, SBUX, TSLA, Z, UNH. Arbitrary-ticker entry works via source resolution but the six are guaranteed-good.
 - Score + evidence + "what changed" module. Watchlist page if time allows, else cut.
 - Not in v1: alerts, auth, sector-peer baselines (self-baseline only), Bluesky.
+
+## Iteration 2 (2026-08-24, from GTM feedback)
+
+Feedback: v1 read generic — "aggregates what anyone could pull from Google." Three changes shipped:
+
+1. **Conclusions first.** Company Read now opens with **The read** — three synthesized takeaways (finding · why it matters · what it changes), generated once per scan from that scan's own measured numbers and verbatim-gated quotes only (`src/lib/synthesize.ts`). Quotes moved below as supporting evidence.
+2. **The delta is the product.** **What moved since the last scan** — every metric's prior → current move with the evidence behind it, computed in code (`src/lib/movers.ts`). First scan sets the baseline; every scan accumulates history.
+3. **Counting, not reading.** **Counted at scale** — store locations enumerated live from the company's own location sitemap (robots.txt → sitemap → every store URL, counted by state in code; CBRL: 655 in ~8s), open roles counted by department/market from public ATS JSON (`src/lib/footprint.ts`). Per-key deltas surface closures and hiring shifts scan-over-scan. New table: `footprint_counts`.
+
+Also: TinyFish logo in the top bar; DASH seeded (live Greenhouse board) — ETSY's board moved to Workday, so its careers source uses the agent path.

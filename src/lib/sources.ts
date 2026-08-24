@@ -108,6 +108,15 @@ export const SOURCES: SourceSpec[] = [
     searchQuery: (name) => `"${name}" layoffs 2026 OR 2025 headcount site:layoffs.fyi OR site:warntracker.com OR site:techcrunch.com OR site:cnbc.com`,
   },
   {
+    // deterministic at scale: robots.txt → location sitemap → every store page
+    // enumerated and counted by state in code. The delta between scans is the signal.
+    key: "store_footprint",
+    label: "Store footprint",
+    family: "ops",
+    kind: "code",
+    urls: (p) => (p.companyDomain ? [`https://${p.companyDomain}/robots.txt`] : []),
+  },
+  {
     // deterministic: EDGAR is a structured public API — parsed in code, no LLM
     key: "edgar",
     label: "SEC EDGAR",
