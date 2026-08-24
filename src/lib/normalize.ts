@@ -41,7 +41,9 @@ export async function normalizeSource(opts: {
   family: Family;
   raw: unknown;
   metricHint?: string;
+  maxItems?: number;
 }): Promise<NormalizedSource> {
+  const maxItems = opts.maxItems ?? 8;
   const rawText = typeof opts.raw === "string" ? opts.raw : JSON.stringify(opts.raw);
   const clipped = rawText.length > 60_000 ? rawText.slice(0, 60_000) : rawText;
 
@@ -62,7 +64,7 @@ Return STRICT JSON:
 {"items":[{"quote":"short VERBATIM excerpt, max 200 chars, must appear in the input","source_url":"url if identifiable else null","published_at":"YYYY-MM-DD or null","sentiment":-1..1}],
  "metric":{"value":number|null,"unit":"string|null","note":"one factual line about what this source shows"},${opts.metricHint ? `\nThe metric MUST be: ${opts.metricHint}. If that exact figure is not in the input, metric.value = null — never substitute a different number.` : ""}
  "family_read":0-100}
-Rules: items must be real verbatim excerpts about the company (max 8, most signal-bearing). NEVER invent, paraphrase, or guess — if a field is not locatable in the input, use null; if nothing qualifies, return items:[]. Extracted quotes are checked against the input verbatim and fabrications are discarded.
+Rules: items must be real verbatim excerpts about the company (max ${maxItems}, most signal-bearing). Prefer items WITH dates, and include older dated items as well as fresh ones — the dated archive matters, not only this week. NEVER invent, paraphrase, or guess — if a field is not locatable in the input, use null; if nothing qualifies, return items:[]. Extracted quotes are checked against the input verbatim and fabrications are discarded.
 family_read: 50=neutral, below=deteriorating, above=improving, judged ONLY from this input, scored by this rubric: ${FAMILY_RUBRICS[opts.family]} If the input has nothing about the company, return items:[], metric:null, family_read:null.`,
         },
         { role: "user", content: clipped },

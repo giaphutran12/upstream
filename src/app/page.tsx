@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { TopBar } from "@/components/TopBar";
 import { Takeaways } from "@/components/Takeaways";
 import { CycleStrip } from "@/components/CycleStrip";
@@ -46,11 +47,32 @@ export default function LiveScanPage() {
   }, [ticker]);
 
   const launch = (tk: string) => {
+    if (state.phase === "running") return; // one scan at a time — no restart-by-Enter
     picked.current = tk;
     setTicker(tk);
     setOpen(false);
     void start(tk);
   };
+
+  // deep link from a company page that had no data yet: /?scan=MCD auto-runs
+  // the first scan, then forwards to the company read it just built
+  const router = useRouter();
+  const autoScanFired = useRef(false);
+  const [autoTicker, setAutoTicker] = useState<string | null>(null);
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get("scan")?.trim().toUpperCase();
+    if (!wanted || autoScanFired.current) return;
+    autoScanFired.current = true;
+    setAutoTicker(wanted);
+    launch(wanted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (state.phase === "complete" && autoTicker && state.company?.ticker === autoTicker) {
+      const timer = setTimeout(() => router.push(`/company/${autoTicker}`), 1600);
+      return () => clearTimeout(timer);
+    }
+  }, [state.phase, state.company, autoTicker, router]);
   const counts = useMemo(() => {
     const c = { complete: 0, working: 0, queued: 0, failed: 0 };
     for (const s of state.sources) c[s.status === "failed" ? "failed" : s.status]++;
@@ -73,6 +95,7 @@ export default function LiveScanPage() {
         className="flex items-end gap-8 px-12 pb-6 pt-10 rule-hairline"
         onSubmit={(e) => {
           e.preventDefault();
+          if (state.phase === "running") return;
           const typed = ticker.trim().toUpperCase();
           if (!typed) return;
           const exact = suggestions.find((s) => s.ticker === typed);
@@ -153,6 +176,14 @@ export default function LiveScanPage() {
           )}
         </div>
       </form>
+
+      {autoTicker && state.phase !== "error" && (
+        <div className="mx-12 mt-6 border border-hairline p-4 text-[13px]" style={{ background: "var(--color-panel)" }}>
+          {state.phase === "complete"
+            ? `First scan of ${autoTicker} complete — opening the company read…`
+            : `${autoTicker} hasn't been scanned before. Running its first scan now — the company read opens itself when the agents finish.`}
+        </div>
+      )}
 
       {state.phase === "error" && (
         <div className="mx-12 mt-6 border border-rust p-4 text-[13px]" style={{ borderColor: "var(--color-rust)" }}>

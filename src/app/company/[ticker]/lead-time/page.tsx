@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { TopBar } from "@/components/TopBar";
 import { MeasureLeadTime } from "@/components/MeasureLeadTime";
@@ -14,7 +14,8 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
   const sql = db();
 
   const [company] = await sql`select id, ticker, name from companies where ticker = ${ticker.toUpperCase()}`;
-  if (!company) notFound();
+  // never-scanned ticker: send it to Live scan, which auto-starts the first scan
+  if (!company) redirect(`/?scan=${encodeURIComponent(ticker.toUpperCase())}`);
 
   const [read] = await sql`
     select signal_metric, signal_start_on, signal_rule, filed_on, lead_days, narrative, series
@@ -22,10 +23,11 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
 
   // this cycle, for any company: filings are the anchors, dated evidence is the signal
   const cycleEvents = await sql`
-    select event_type, title, occurred_on, url from official_events
+    select distinct on (event_type, occurred_on) event_type, title, occurred_on, url from official_events
     where company_id = ${company.id} and event_type in ('periodic_report', '8k_502')
       and occurred_on > now() - interval '15 months'
-    order by occurred_on asc`;
+    order by event_type, occurred_on asc`;
+  cycleEvents.sort((a, b) => String(a.occurred_on).localeCompare(String(b.occurred_on)));
   const datedEvidence = await sql`
     select published_at, family from evidence
     where company_id = ${company.id} and published_at is not null
@@ -104,7 +106,7 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
               ■ official filings · ● dated customer evidence{anchorOn ? ` · ${freshCount} signals since the ${formatDay(anchorOn)} report` : ""}
             </div>
           </div>
-          <svg viewBox="0 0 1240 200" className="block w-full" role="img"
+          <svg viewBox="0 0 1240 280" className="block w-full" role="img"
             aria-label={`Reporting-cycle timeline for ${company.name}: official filings and dated customer evidence.`}>
             {timeline.cycleShade && (
               <rect x={timeline.cycleShade.x0} y={30} width={timeline.cycleShade.x1 - timeline.cycleShade.x0} height={90} fill="var(--color-rust)" opacity={0.05} />
@@ -280,20 +282,32 @@ function layoutCycleTimeline(
   const t1 = Math.max(today, expectedOn ? Date.parse(expectedOn) : today) + 14 * day;
   const xOf = (t: number) => x0 + ((t - t0) / (t1 - t0)) * (x1 - x0);
 
-  const filings = events.map((event, i) => {
-    const px = Math.round(xOf(Date.parse(event.on)));
-    const label =
-      event.type === "8k_502"
-        ? `Officer change (8-K) · ${formatDay(event.on)}`
-        : `${event.title.replace(" filed", "")} · ${formatDay(event.on)}`;
-    return {
-      px,
-      label,
-      isKey: event.type === "8k_502",
-      anchorEnd: px > 960,
-      labelY: 158 + (i % 2) * 20,
-    };
-  });
+  // greedy lane layout: each label drops to the first lane where it fits,
+  // so filings that land close together never overprint each other
+  const laneEnds: number[] = [];
+  const filings = events
+    .map((event) => {
+      const px = Math.round(xOf(Date.parse(event.on)));
+      const label =
+        event.type === "8k_502"
+          ? `Officer change (8-K) · ${formatDay(event.on)}`
+          : `${event.title.replace(" filed", "")} · ${formatDay(event.on)}`;
+      return { px, label, isKey: event.type === "8k_502", anchorEnd: px > 960 };
+    })
+    .sort((a, b) => a.px - b.px)
+    .map((mark) => {
+      const width = mark.label.length * 6.4 + 14;
+      const start = mark.anchorEnd ? mark.px - width : mark.px;
+      const end = mark.anchorEnd ? mark.px : mark.px + width;
+      let lane = laneEnds.findIndex((laneEnd) => start > laneEnd);
+      if (lane === -1) {
+        lane = laneEnds.length;
+        laneEnds.push(end);
+      } else {
+        laneEnds[lane] = end;
+      }
+      return { ...mark, labelY: 152 + lane * 21 };
+    });
 
   // evidence dots stack upward when several land the same week
   const weekCounts = new Map<number, number>();

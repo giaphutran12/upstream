@@ -34,6 +34,8 @@ export type SourceSpec = {
   searchQuery?: (companyName: string) => string;
   /** planner-discovered probes: the query and rationale, persisted as the playbook */
   probeMeta?: { query: string; why: string };
+  /** evidence cap for the normalizer (default 8); higher for backfill-rich sources */
+  maxItems?: number;
 };
 
 const evidenceShape = `Return STRICT JSON only:
@@ -59,7 +61,12 @@ export const SOURCES: SourceSpec[] = [
     family: "sentiment",
     kind: "fetch",
     agentFallback: true,
-    urls: (p) => (p.trustpilotDomain ? [`https://www.trustpilot.com/review/${p.trustpilotDomain}`] : []),
+    maxItems: 24,
+    // pages 2-4 are the past: older dated reviews backfill the cycle timeline
+    urls: (p) =>
+      p.trustpilotDomain
+        ? [1, 2, 3, 4].map((n) => `https://www.trustpilot.com/review/${p.trustpilotDomain}${n > 1 ? `?page=${n}` : ""}`)
+        : [],
     goal: (name) =>
       `Read the most recent reviews of ${name} on this page. ${evidenceShape} Put the average star rating shown in metric.value with unit "stars".`,
   },

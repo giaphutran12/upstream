@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { TopBar } from "@/components/TopBar";
 import { Sparkline } from "@/components/Sparkline";
@@ -17,7 +17,8 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
   const sql = db();
 
   const [company] = await sql`select id, ticker, name, sector from companies where ticker = ${ticker.toUpperCase()}`;
-  if (!company) notFound();
+  // never-scanned ticker: send it to Live scan, which auto-starts the first scan
+  if (!company) redirect(`/?scan=${encodeURIComponent(ticker.toUpperCase())}`);
 
   const [scan] = await sql`
     select id, direction_score, provisional, family_scores, takeaways, completed_at, started_at

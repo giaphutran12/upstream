@@ -234,6 +234,7 @@ export async function POST(request: Request) {
                 family: spec.family,
                 raw,
                 metricHint: spec.metricHint,
+                maxItems: spec.maxItems,
               });
 
               // bestbet-style gate: fetched text must contain the quote verbatim
