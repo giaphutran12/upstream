@@ -90,3 +90,10 @@ Feedback: v1 read generic — "aggregates what anyone could pull from Google." T
 3. **Counting, not reading.** **Counted at scale** — store locations enumerated live from the company's own location sitemap (robots.txt → sitemap → every store URL, counted by state in code; CBRL: 655 in ~8s), open roles counted by department/market from public ATS JSON (`src/lib/footprint.ts`). Per-key deltas surface closures and hiring shifts scan-over-scan. New table: `footprint_counts`.
 
 Also: TinyFish logo in the top bar; DASH seeded (live Greenhouse board) — ETSY's board moved to Workday, so its careers source uses the agent path.
+
+## Iteration 3 (2026-08-24 PM, from Edward's review)
+
+1. **Search everywhere.** Fuzzy company search moved into the top bar on every page — Company Read and Lead Time were dead ends without it.
+2. **The cycle read, for any company.** 10-Q/10-K filings ingest as cycle anchors; evidence dated after the anchor is this cycle's early signal. Synthesis adds a direction call (up/down/mixed pressure into the next report) calibrated against how the last cycle resolved — CBRL's measured 84-day lead, or "similar complaints last cycle didn't dent the record" for the Apple case. Lead-time page shows a this-cycle timeline (filings ■, dated evidence ●, today, expected next report □) for any ticker.
+3. **Depth planner (agentic, not API wrappers).** An LLM planner decides what "deeper" means per company and dispatches search+fetch probes — browsers only on escalation. AAPL first run: developer-forum failure reports, repair community, NLRB records, EU DMA enforcement (3/4 yielded). Probe yield persists in source_runs as the planner's playbook: repeat what worked, drop dead ends.
+4. **Framework call:** researched Mastra (subagent report) — young 1.0, Vercel serverless friction, would be a multi-day rewrite for problems we don't have; staying hand-rolled, revisit after the conference. Next step there: multi-round planner loop (plan → probe → assess family coverage → deepen, capped rounds) + a source_playbook table.

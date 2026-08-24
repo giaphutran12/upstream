@@ -61,7 +61,18 @@ export async function synthesizeTakeaways(
     ),
     footprint_changes_since_last_scan: deltas.footprintMoves.slice(0, 12),
     is_first_scan: deltas.previousScanId == null,
-    reporting_cycle: cycleFrame,
+    reporting_cycle: {
+      anchor: cycleFrame.anchor,
+      days_since_anchor: cycleFrame.daysSinceAnchor,
+      expected_next_report_on: cycleFrame.expectedNextOn,
+      days_until_expected: cycleFrame.daysUntilExpected,
+      fresh_signals_this_cycle: cycleFrame.freshSignals,
+      count_of_signals_dated_after_anchor: cycleFrame.freshCount,
+      // different collection window — NEVER present as a trend against the count above
+      count_of_older_signals_before_anchor_not_comparable: cycleFrame.priorCycleCount,
+      officer_change_since_anchor: cycleFrame.officerChangeSinceAnchor,
+      measured_lead_days_last_cycle: cycleFrame.measuredLeadDays,
+    },
     measured_lead_time: leadTime
       ? { lead_days: leadTime.lead_days, narrative: leadTime.narrative, metric: leadTime.signal_metric }
       : null,
