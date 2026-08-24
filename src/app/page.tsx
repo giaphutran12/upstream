@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { TopBar } from "@/components/TopBar";
 import { Takeaways } from "@/components/Takeaways";
 import { CycleStrip } from "@/components/CycleStrip";
-import { useScan, type SourceState } from "@/hooks/use-scan";
+import { useScan, ACTIVE_SCAN_KEY, type SourceState } from "@/hooks/use-scan";
 
 const FAMILY_ROWS = [
   { key: "sentiment", label: "Customer Sentiment", weight: "40%" },
@@ -18,7 +18,7 @@ const FAMILY_ROWS = [
 type CompanyHit = { ticker: string; name: string };
 
 export default function LiveScanPage() {
-  const { state, start } = useScan();
+  const { state, start, resume, stopPolling } = useScan();
   const [ticker, setTicker] = useState("");
   const [suggestions, setSuggestions] = useState<CompanyHit[]>([]);
   const [open, setOpen] = useState(false);
@@ -61,10 +61,25 @@ export default function LiveScanPage() {
   const [autoTicker, setAutoTicker] = useState<string | null>(null);
   useEffect(() => {
     const wanted = new URLSearchParams(window.location.search).get("scan")?.trim().toUpperCase();
-    if (!wanted || autoScanFired.current) return;
-    autoScanFired.current = true;
-    setAutoTicker(wanted);
-    launch(wanted);
+    if (wanted && !autoScanFired.current) {
+      autoScanFired.current = true;
+      setAutoTicker(wanted);
+      launch(wanted);
+      return;
+    }
+    // reattach: the scan is a server-side job that persists on its own — a
+    // refresh or a wander through other tabs rebuilds this exact view from
+    // the last ticker this browser scanned, running or finished
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(ACTIVE_SCAN_KEY)?.trim().toUpperCase() ?? null;
+    } catch {}
+    if (stored) {
+      picked.current = stored;
+      setTicker(stored);
+      void resume(stored);
+    }
+    return stopPolling;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
@@ -89,7 +104,7 @@ export default function LiveScanPage() {
 
   return (
     <main className="min-h-screen">
-      <TopBar active="scan" />
+      <TopBar active="scan" ticker={state.company?.ticker} />
 
       <form
         className="flex items-end gap-8 px-12 pb-6 pt-10 rule-hairline"

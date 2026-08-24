@@ -46,14 +46,96 @@ export type ScanState = {
 
 const IDLE: ScanState = { phase: "idle", sources: [], score: null, provisional: true, families: {}, takeaways: [], cycle: null };
 
+/** The last ticker this browser scanned — survives refresh and navigation. */
+export const ACTIVE_SCAN_KEY = "upstream:active-scan";
+
+type StatusSnapshot = {
+  company: { ticker: string; name: string } | null;
+  scan: { id: number; status: string; error: string | null } | null;
+  runs?: { key: string; label: string; family: string; status: string; durationMs: number | null; itemsRead: number | null; error: string | null; streamingUrl: string | null }[];
+  samples?: { source_key: string; quote: string; source_label: string; published_at: string | null }[];
+  read?: { score: number | null; provisional: boolean; families: ScanState["families"]; takeaways: TakeawayItem[]; cycle: CycleCallState | null };
+};
+
+/** Rebuild the live-scan view from the persisted job — same shapes the stream produces. */
+function stateFromSnapshot(data: StatusSnapshot): ScanState {
+  const scan = data.scan!;
+  return {
+    phase: scan.status === "running" ? "running" : scan.status === "complete" ? "complete" : "error",
+    error: scan.status === "failed" ? (scan.error ?? "the scan failed") : undefined,
+    scanId: scan.id,
+    company: data.company ? { id: 0, ticker: data.company.ticker, name: data.company.name } : undefined,
+    sources: (data.runs ?? []).map((r) => ({
+      key: r.key,
+      label: r.label,
+      family: r.family,
+      status: r.status === "running" ? ("working" as const) : r.status === "complete" ? ("complete" as const) : r.status === "failed" ? ("failed" as const) : ("queued" as const),
+      durationMs: r.durationMs ?? undefined,
+      itemsRead: r.itemsRead ?? undefined,
+      error: r.error ?? undefined,
+      streamingUrl: r.streamingUrl ?? undefined,
+      samples: (data.samples ?? [])
+        .filter((s) => s.source_key === r.key)
+        .map((s) => ({ quote: s.quote, source_label: s.source_label, published_at: s.published_at })),
+    })),
+    score: data.read?.score ?? null,
+    provisional: data.read?.provisional ?? true,
+    families: data.read?.families ?? {},
+    takeaways: data.read?.takeaways ?? [],
+    cycle: data.read?.cycle ?? null,
+  };
+}
+
 export function useScan() {
   const [state, setState] = useState<ScanState>(IDLE);
   const abortRef = useRef<AbortController | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) clearTimeout(pollRef.current);
+    pollRef.current = null;
+  }, []);
+
+  /**
+   * Reattach to a scan that is (or was) running server-side: hydrate the view
+   * from /api/scan/status and poll until the job lands. The job itself never
+   * depends on this — closing the page loses nothing but the view.
+   */
+  const resume = useCallback(
+    async (ticker: string) => {
+      stopPolling();
+      const tick = async () => {
+        let running = false;
+        try {
+          const res = await fetch(`/api/scan/status?ticker=${encodeURIComponent(ticker)}`);
+          const data = (await res.json()) as StatusSnapshot;
+          if (!data.scan) {
+            try {
+              localStorage.removeItem(ACTIVE_SCAN_KEY);
+            } catch {}
+            return;
+          }
+          setState(stateFromSnapshot(data));
+          running = data.scan.status === "running";
+        } catch {
+          running = true; // transient poll failure — the job is server-side, try again
+        }
+        if (running) pollRef.current = setTimeout(tick, 2500);
+      };
+      await tick();
+    },
+    [stopPolling],
+  );
 
   const start = useCallback(async (ticker: string) => {
     abortRef.current?.abort();
+    if (pollRef.current) clearTimeout(pollRef.current);
+    pollRef.current = null;
     const abort = new AbortController();
     abortRef.current = abort;
+    try {
+      localStorage.setItem(ACTIVE_SCAN_KEY, ticker);
+    } catch {}
     setState({ ...IDLE, phase: "running", startedAt: Date.now() });
 
     try {
@@ -96,7 +178,7 @@ export function useScan() {
     }
   }, []);
 
-  return { state, start };
+  return { state, start, resume, stopPolling };
 }
 
 function applyEvent(s: ScanState, e: Record<string, unknown>): ScanState {

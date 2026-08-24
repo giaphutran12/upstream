@@ -67,7 +67,9 @@ export function probeToSpec(probe: Probe): SourceSpec {
     urls: () => ["planned"], // presence marker; search-kind gets its urls from the query
     searchQuery: () => probe.query,
     metricHint: probe.metricHint,
-    probeMeta: { query: probe.query, why: probe.why },
+    // label + family ride along so a reattaching viewer can rebuild the
+    // source card from the persisted run row alone
+    probeMeta: { query: probe.query, why: probe.why, label: `${probe.label} · discovered`, family: probe.family },
   };
 }
 

@@ -38,6 +38,22 @@ export async function POST(request: Request) {
   }
 
   const sql = db();
+
+  // one background job per company: a second scan on a ticker mid-flight is
+  // duplicate spend racing the same tables, so it is refused, not started
+  const [alreadyRunning] = await sql`
+    select scans.id from scans join companies on companies.id = scans.company_id
+    where companies.ticker = ${ticker} and scans.status = 'running'
+      and scans.started_at > now() - interval '15 minutes'
+    order by scans.started_at desc limit 1`;
+  if (alreadyRunning) {
+    console.log(`scan: refused duplicate for ${ticker} — scan ${alreadyRunning.id} is already running`);
+    return Response.json(
+      { error: `A scan for ${ticker} is already running — it persists in the background; the company read opens when it finishes` },
+      { status: 409 },
+    );
+  }
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -60,6 +76,7 @@ export async function POST(request: Request) {
         closed = true;
       }
 
+      let scanRowId: number | null = null;
       try {
         // 1. company (seeded or resolved live)
         let [company] = await sql`select id, ticker, name, source_profile from companies where ticker = ${ticker}`;
@@ -83,6 +100,7 @@ export async function POST(request: Request) {
         }
 
         const [scan] = await sql`insert into scans (company_id) values (${company.id}) returning id`;
+        scanRowId = Number(scan.id);
         send({
           type: "scan_created",
           scanId: scan.id,
@@ -219,7 +237,11 @@ export async function POST(request: Request) {
                     stealth: spec.kind === "fetch" ? true : spec.stealth,
                     proxyUS: true,
                     onProgress: (purpose) => send({ type: "source_progress", key: spec.key, purpose }),
-                    onStreamingUrl: (streamingUrl) => send({ type: "source_streaming", key: spec.key, streamingUrl }),
+                    onStreamingUrl: (streamingUrl) => {
+                      send({ type: "source_streaming", key: spec.key, streamingUrl });
+                      // persisted so a reattaching viewer still gets the watch link
+                      void sql`update source_runs set streaming_url = ${streamingUrl} where id = ${run.id}`.catch(() => {});
+                    },
                   }),
                 );
                 runId = outcome.runId;
@@ -333,9 +355,9 @@ export async function POST(request: Request) {
 
         const families = familyScores(reads);
         const { score } = directionScore(families);
-        await sql`update scans set status = 'complete', completed_at = now() where id = ${scan.id}`;
 
-        // synthesis: three conclusions from this scan's own data — the page's lead
+        // synthesis runs BEFORE the scan flips complete: anything waiting on
+        // scan status must find the takeaways already persisted when it renders
         try {
           const synthesis = await synthesizeTakeaways(sql, {
             companyId: company.id,
@@ -348,11 +370,20 @@ export async function POST(request: Request) {
           console.log(`scan ${scan.id}: synthesis failed because ${err instanceof Error ? err.message : String(err)} — scan still completes`);
         }
 
+        await sql`update scans set status = 'complete', completed_at = now() where id = ${scan.id}`;
         console.log(`scan ${scan.id}: complete, direction score ${score}`);
         send({ type: "scan_complete", scanId: scan.id, score });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.log(`scan: failed because ${message}`);
+        console.log(`scan${scanRowId != null ? ` ${scanRowId}` : ""}: failed because ${message}`);
+        // never leave a scan stuck on 'running': pages wait on this status
+        if (scanRowId != null) {
+          await sql`
+            update scans set status = 'failed', completed_at = now(), error = ${message}
+            where id = ${scanRowId} and status = 'running'`.catch((e: unknown) =>
+            console.log(`scan ${scanRowId}: could not mark failed because ${e instanceof Error ? e.message : String(e)}`),
+          );
+        }
         send({ type: "scan_error", message });
       } finally {
         if (!closed) {

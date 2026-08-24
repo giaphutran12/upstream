@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { lookupCik } from "@/lib/resolve";
 import { TopBar } from "@/components/TopBar";
 import { InlineScan } from "@/components/InlineScan";
+import { ScanWait } from "@/components/ScanWait";
 import { Sparkline } from "@/components/Sparkline";
 import { Takeaways, type TakeawayRow } from "@/components/Takeaways";
 import { CycleStrip, type CycleCallRow } from "@/components/CycleStrip";
@@ -33,7 +34,16 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
     from scans where company_id = ${company.id} and status = 'complete'
     order by started_at desc limit 1`;
 
-  if (!scan) return <FirstScanShell ticker={String(company.ticker)} name={String(company.name)} />;
+  if (!scan) {
+    // a scan is already mid-flight (started on Live Scan or another tab):
+    // wait on that one background job — never fire a second because the
+    // reader clicked over early. If it's not finished, it's not finished.
+    const [latest] = await sql`
+      select id, status, (started_at > now() - interval '15 minutes') as fresh
+      from scans where company_id = ${company.id} order by started_at desc limit 1`;
+    const running = latest?.status === "running" && Boolean(latest.fresh);
+    return <FirstScanShell ticker={String(company.ticker)} name={String(company.name)} waiting={running} />;
+  }
 
   const deltas: ScanDeltas | null = scan ? await computeDeltas(sql, Number(company.id), Number(scan.id)) : null;
 
@@ -417,8 +427,12 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
   );
 }
 
-/** No read yet: the page renders immediately and the first scan streams in place. */
-function FirstScanShell({ ticker, name }: { ticker: string; name: string }) {
+/**
+ * No read yet. Two cases, one shell: `waiting` means a scan is already running
+ * in the background (it persists on its own — this page only watches it);
+ * otherwise this page starts the first scan and streams it in place.
+ */
+function FirstScanShell({ ticker, name, waiting = false }: { ticker: string; name: string; waiting?: boolean }) {
   return (
     <main className="min-h-screen">
       <TopBar active="company" ticker={ticker} />
@@ -430,11 +444,21 @@ function FirstScanShell({ ticker, name }: { ticker: string; name: string }) {
         <div className="mt-3.5 text-[13px] text-muted tnum">{ticker} &nbsp;·&nbsp; first scan</div>
       </div>
       <div className="max-w-[860px] px-12">
-        <InlineScan ticker={ticker} autoStart />
+        {waiting ? <ScanWait ticker={ticker} /> : <InlineScan ticker={ticker} autoStart />}
         <div className="mt-5 text-[13px] leading-relaxed text-muted">
-          {name} hasn&apos;t been read before. Agents are visiting its primary sources now — customers, employees, filings, its
-          own store infrastructure — and the planner is deciding what &ldquo;deeper&rdquo; means for this company. The three
-          takeaways, the cycle call, and the counted footprint render on this page the moment they land.
+          {waiting ? (
+            <>
+              {name}&apos;s scan is running right now. Agents are visiting its primary sources — customers, employees, filings,
+              its own store infrastructure — and everything they find is persisted the moment it lands. The read renders here
+              when the last agent reports.
+            </>
+          ) : (
+            <>
+              {name} hasn&apos;t been read before. Agents are visiting its primary sources now — customers, employees, filings,
+              its own store infrastructure — and the planner is deciding what &ldquo;deeper&rdquo; means for this company. The
+              three takeaways, the cycle call, and the counted footprint render on this page the moment they land.
+            </>
+          )}
         </div>
       </div>
     </main>

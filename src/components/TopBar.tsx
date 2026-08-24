@@ -2,11 +2,13 @@ import Image from "next/image";
 import Link from "next/link";
 import { CompanySearch } from "./CompanySearch";
 
-export function TopBar({ active, ticker = "CBRL", now }: { active: "scan" | "company" | "lead"; ticker?: string; now?: string }) {
+export function TopBar({ active, ticker, now }: { active: "scan" | "company" | "lead"; ticker?: string; now?: string }) {
+  // no fallback ticker: until a company is in play the company tabs have
+  // nowhere honest to point, so they render disabled instead of guessing
   const TABS = [
     { href: "/", label: "Live scan", key: "scan" },
-    { href: `/company/${ticker}`, label: "Company read", key: "company" },
-    { href: `/company/${ticker}/lead-time`, label: "Lead time", key: "lead" },
+    { href: ticker ? `/company/${ticker}` : null, label: "Company read", key: "company" },
+    { href: ticker ? `/company/${ticker}/lead-time` : null, label: "Lead time", key: "lead" },
   ] as const;
   const stamp =
     now ??
@@ -38,11 +40,17 @@ export function TopBar({ active, ticker = "CBRL", now }: { active: "scan" | "com
         <CompanySearch section={active === "lead" ? "lead" : "company"} />
       </div>
       <nav className="flex gap-7">
-        {TABS.map((tab) => (
-          <Link key={tab.key} href={tab.href} className={tab.key === active ? "nav-link nav-link--active" : "nav-link"}>
-            {tab.label}
-          </Link>
-        ))}
+        {TABS.map((tab) =>
+          tab.href ? (
+            <Link key={tab.key} href={tab.href} className={tab.key === active ? "nav-link nav-link--active" : "nav-link"}>
+              {tab.label}
+            </Link>
+          ) : (
+            <span key={tab.key} className="nav-link" style={{ opacity: 0.35, cursor: "default" }} title="Pick a company first">
+              {tab.label}
+            </span>
+          ),
+        )}
       </nav>
       <div className="ml-5 flex items-center gap-2 text-xs text-muted tnum">
         <span className="pulse-dot" aria-hidden />

@@ -138,13 +138,18 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
                   <rect x={mark.px - 4} y={116} width={8} height={8} fill={mark.isKey ? "var(--color-rust)" : "var(--color-ink)"} />
                 )}
                 <line x1={mark.px} y1={124} x2={mark.px} y2={mark.labelY - 10} stroke={mark.isKey || mark.expected ? "var(--color-rust)" : "var(--color-muted)"} strokeWidth={1} opacity={mark.expected ? 0.7 : 1} />
-                <text x={mark.anchorEnd ? mark.px - 6 : mark.px + 6} y={mark.labelY}
-                  textAnchor={mark.anchorEnd ? "end" : "start"} fontSize={11.5}
-                  fontWeight={mark.isKey || mark.expected ? 600 : 400}
-                  fill={mark.expected ? "var(--color-rust)" : mark.isKey ? "var(--color-ink)" : "var(--color-muted)"}>
-                  {mark.label}
-                </text>
               </g>
+            ))}
+            {/* all labels after all leaders; the paper halo keeps glyphs clean
+                even on the fallback path where a leader may still cross */}
+            {timeline.filings.map((mark, i) => (
+              <text key={`label-${i}`} x={mark.anchorEnd ? mark.px - 6 : mark.px + 6} y={mark.labelY}
+                textAnchor={mark.anchorEnd ? "end" : "start"} fontSize={11.5}
+                fontWeight={mark.isKey || mark.expected ? 600 : 400}
+                fill={mark.expected ? "var(--color-rust)" : mark.isKey ? "var(--color-ink)" : "var(--color-muted)"}
+                paintOrder="stroke" stroke="var(--color-paper)" strokeWidth={3.5} strokeLinejoin="round">
+                {mark.label}
+              </text>
             ))}
             <line x1={timeline.todayX} y1={34} x2={timeline.todayX} y2={120} stroke="var(--color-ink)" strokeWidth={1} strokeDasharray="2 4" />
             {timeline.cycleShade && (
@@ -249,20 +254,27 @@ function BacktestChart({ read, events }: { read: { signal_metric: string; signal
           {chart.months.map((m) => (
             <text key={m.label} x={m.px} y={320} fontSize={10.5} fill="var(--color-muted)">{m.label}</text>
           ))}
-          <line x1={chart.startX} y1={306} x2={chart.startX} y2={330} stroke="var(--color-rust)" strokeWidth={1} />
-          <text x={chart.startX - 8} y={344} textAnchor="end" fontSize={12} fontWeight={600} fill="var(--color-rust)">
-            Signal turns · {startLabel}
-          </text>
+          <line x1={chart.startX} y1={306} x2={chart.startX} y2={chart.signalMark.labelY - 12} stroke="var(--color-rust)" strokeWidth={1} />
           {chart.eventMarks.map((mark, i) => (
             <g key={i}>
               <rect x={mark.px - 3} y={299} width={6} height={6} fill={mark.isKey ? "var(--color-rust)" : "var(--color-ink)"} />
               <line x1={mark.px} y1={306} x2={mark.px} y2={mark.labelY - 12} stroke={mark.isKey ? "var(--color-rust)" : "var(--color-muted)"} strokeWidth={1} />
-              <text x={mark.anchorEnd ? mark.px - 6 : mark.px + 7} y={mark.labelY}
-                textAnchor={mark.anchorEnd ? "end" : "start"} fontSize={mark.isKey ? 12 : 11.5}
-                fontWeight={mark.isKey ? 600 : 400} fill={mark.isKey ? "var(--color-ink)" : "var(--color-muted)"}>
-                {mark.title} · {formatDay(mark.date)}
-              </text>
             </g>
+          ))}
+          {/* all labels after all leaders; the paper halo keeps glyphs clean
+              even on the fallback path where a leader may still cross */}
+          <text x={chart.signalMark.anchorEnd ? chart.startX - 8 : chart.startX + 8} y={chart.signalMark.labelY}
+            textAnchor={chart.signalMark.anchorEnd ? "end" : "start"} fontSize={12} fontWeight={600} fill="var(--color-rust)"
+            paintOrder="stroke" stroke="var(--color-paper)" strokeWidth={3.5} strokeLinejoin="round">
+            Signal turns · {startLabel}
+          </text>
+          {chart.eventMarks.map((mark, i) => (
+            <text key={`label-${i}`} x={mark.anchorEnd ? mark.px - 6 : mark.px + 7} y={mark.labelY}
+              textAnchor={mark.anchorEnd ? "end" : "start"} fontSize={mark.isKey ? 12 : 11.5}
+              fontWeight={mark.isKey ? 600 : 400} fill={mark.isKey ? "var(--color-ink)" : "var(--color-muted)"}
+              paintOrder="stroke" stroke="var(--color-paper)" strokeWidth={3.5} strokeLinejoin="round">
+              {mark.title} · {formatDay(mark.date)}
+            </text>
           ))}
         </svg>
         <div className="rule-hairline max-w-[900px] pt-2.5 text-[11px] leading-normal text-muted" style={{ borderTop: "1px solid var(--color-hairline)", borderBottom: "none" }}>
@@ -301,6 +313,55 @@ function BacktestChart({ read, events }: { read: { signal_metric: string; signal
   );
 }
 
+/**
+ * One collision model for every annotation a timeline draws. A rendered mark
+ * is TWO primitives: a text box in some lane, and a vertical leader at px that
+ * crosses every lane above that one — so a placement is legal only if no
+ * leader pierces any text box and no text boxes overlap in a lane. DFS over
+ * (lane, anchor side) per mark, rightmost first; returns null when no legal
+ * layout exists within `lanes` lanes (callers fall back and rely on the halo).
+ */
+function placeLabels(
+  marks: { px: number; w: number; anchorEnd: boolean }[],
+  lanes: number,
+  minX: number,
+  maxX: number,
+): { lane: number; anchorEnd: boolean }[] | null {
+  const order = marks.map((_, i) => i).sort((a, b) => marks[b].px - marks[a].px);
+  const placed: { px: number; start: number; end: number; lane: number }[] = [];
+  const result: { lane: number; anchorEnd: boolean }[] = new Array(marks.length);
+  let nodes = 0;
+  const legal = (c: { px: number; start: number; end: number; lane: number }) =>
+    placed.every(
+      (p) =>
+        !(p.lane === c.lane && c.start <= p.end && p.start <= c.end) && // text overprints text
+        !(p.lane > c.lane && c.start < p.px && p.px < c.end) && // p's leader pierces c's text
+        !(c.lane > p.lane && p.start < c.px && c.px < p.end), // c's leader pierces p's text
+    );
+  const dfs = (k: number): boolean => {
+    if (k === order.length) return true;
+    if (++nodes > 20_000) return false;
+    const m = marks[order[k]];
+    for (let lane = 0; lane < lanes; lane++) {
+      for (const anchorEnd of [m.anchorEnd, !m.anchorEnd]) {
+        const start = anchorEnd ? m.px - m.w : m.px;
+        const end = anchorEnd ? m.px : m.px + m.w;
+        if (start < minX || end > maxX) continue;
+        const cand = { px: m.px, start, end, lane };
+        if (!legal(cand)) continue;
+        placed.push(cand);
+        if (dfs(k + 1)) {
+          result[order[k]] = { lane, anchorEnd };
+          return true;
+        }
+        placed.pop();
+      }
+    }
+    return false;
+  };
+  return dfs(0) ? result : null;
+}
+
 function layoutCycleTimeline(
   events: { type: string; title: string; on: string; url: string | null }[],
   evidenceDates: string[],
@@ -317,10 +378,10 @@ function layoutCycleTimeline(
   const t1 = Math.max(today, expectedOn ? Date.parse(expectedOn) : today) + 14 * day;
   const xOf = (t: number) => x0 + ((t - t0) / (t1 - t0)) * (x1 - x0);
 
-  // greedy lane layout: each label drops to the first lane where it fits,
-  // so filings that land close together never overprint each other. The
-  // expected-report label rides the same lanes — below the axis, no dots there.
-  const laneEnds: number[] = [];
+  // labels and their leader lines share one collision model (placeLabels):
+  // the solver assigns each mark a lane and anchor side so no leader ever
+  // pierces another label's text. The expected-report label rides the same
+  // lanes — below the axis, no dots there.
   const marks = events.map((event) => {
     const px = Math.round(xOf(Date.parse(event.on)));
     const label =
@@ -333,12 +394,26 @@ function layoutCycleTimeline(
     const px = Math.round(xOf(Date.parse(expectedOn)));
     marks.push({ px, label: expectedLabel, isKey: false, expected: true, anchorEnd: px > 860 });
   }
-  const filings = marks
-    .sort((a, b) => a.px - b.px)
-    .map((mark) => {
-      const width = mark.label.length * (mark.isKey || mark.expected ? 7.4 : 6.4) + 16;
-      const start = mark.anchorEnd ? mark.px - width : mark.px;
-      const end = mark.anchorEnd ? mark.px : mark.px + width;
+  marks.sort((a, b) => a.px - b.px);
+  const widths = marks.map((m) => m.label.length * (m.isKey || m.expected ? 7.4 : 6.4) + 16);
+  const placement = placeLabels(
+    marks.map((m, i) => ({ px: m.px, w: widths[i], anchorEnd: m.anchorEnd })),
+    4,
+    8,
+    1232,
+  );
+  let filings: ((typeof marks)[number] & { labelY: number })[];
+  if (placement) {
+    console.log(`[lead-time] cycle timeline: placed ${marks.length} labels with zero leader-text crossings`);
+    filings = marks.map((mark, i) => ({ ...mark, anchorEnd: placement[i].anchorEnd, labelY: 152 + placement[i].lane * 21 }));
+  } else {
+    console.warn(
+      `[lead-time] cycle timeline: no crossing-free layout for ${marks.length} labels within 4 lanes — greedy lanes, text halo covers crossings`,
+    );
+    const laneEnds: number[] = [];
+    filings = marks.map((mark, i) => {
+      const start = mark.anchorEnd ? mark.px - widths[i] : mark.px;
+      const end = mark.anchorEnd ? mark.px : mark.px + widths[i];
       let lane = laneEnds.findIndex((laneEnd) => start > laneEnd);
       if (lane === -1) {
         lane = laneEnds.length;
@@ -348,6 +423,7 @@ function layoutCycleTimeline(
       }
       return { ...mark, labelY: 152 + lane * 21 };
     });
+  }
 
   // evidence dots stack upward when several land the same week
   const weekCounts = new Map<number, number>();
@@ -405,19 +481,40 @@ function layoutChart(series: SeriesPoint[], startOn: string, filedOn: string, ev
   const gridY = [];
   for (let v = vMin; v <= vMax; v += step) gridY.push({ label: `${v}`, px: Math.round(yOf(v)) });
 
-  const eventMarks = events.map((event, i) => {
-    const px = Math.round(xOf(String(event.occurred_on)));
-    // labels near the right edge anchor leftward so nothing bleeds off-canvas
-    const anchorEnd = px > 940;
-    return {
-      px,
-      date: String(event.occurred_on),
-      title: shorten(event.title.replace(/ \(8-K.*\)/, " (8-K)"), 30),
-      isKey: event.is_key,
-      anchorEnd,
-      labelY: 374 + (i % 2) * 28,
-    };
-  });
+  const eventLabels = events.map((event) => ({
+    px: Math.round(xOf(String(event.occurred_on))),
+    date: String(event.occurred_on),
+    title: shorten(event.title.replace(/ \(8-K.*\)/, " (8-K)"), 30),
+    isKey: event.is_key,
+  }));
+  // the signal-turn label rides the same lanes as event labels — one collision
+  // model (placeLabels) covering text boxes AND leader lines for all of them
+  const signalLabel = `Signal turns · ${formatDay(startOn)}`;
+  const labelMarks = [
+    { px: startX, w: signalLabel.length * 7.4 + 16, anchorEnd: true },
+    ...eventLabels.map((m) => ({
+      px: m.px,
+      w: `${m.title} · ${formatDay(m.date)}`.length * (m.isKey ? 7.4 : 6.4) + 16,
+      // labels near the right edge anchor leftward so nothing bleeds off-canvas
+      anchorEnd: m.px > 940,
+    })),
+  ];
+  const placement = placeLabels(labelMarks, 3, 8, 1232);
+  if (placement) {
+    console.log(`[lead-time] backtest chart: placed ${labelMarks.length} labels with zero leader-text crossings`);
+  } else {
+    console.warn(
+      `[lead-time] backtest chart: no crossing-free layout for ${labelMarks.length} labels within 3 lanes — zigzag lanes, text halo covers crossings`,
+    );
+  }
+  const signalMark = placement
+    ? { anchorEnd: placement[0].anchorEnd, labelY: 374 + placement[0].lane * 28 }
+    : { anchorEnd: true, labelY: 344 };
+  const eventMarks = eventLabels.map((m, i) => ({
+    ...m,
+    anchorEnd: placement ? placement[i + 1].anchorEnd : m.px > 940,
+    labelY: placement ? 374 + placement[i + 1].lane * 28 : 374 + (i % 2) * 28,
+  }));
 
   // month ticks skip any position where a marker's leader line will cross them
   const busyXs = [startX, filedX, ...eventMarks.map((m) => m.px)];
@@ -434,7 +531,7 @@ function layoutChart(series: SeriesPoint[], startOn: string, filedOn: string, ev
     cursor.setMonth(cursor.getMonth() + 1);
   }
 
-  return { linePoints, startX, filedX, startY: Math.round(yOf(startPoint.v)), gridY, months, eventMarks };
+  return { linePoints, startX, filedX, startY: Math.round(yOf(startPoint.v)), gridY, months, eventMarks, signalMark };
 }
 
 function shorten(s: string, n: number) {

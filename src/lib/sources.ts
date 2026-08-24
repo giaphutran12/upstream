@@ -33,7 +33,7 @@ export type SourceSpec = {
   /** search-kind: query to run; top results get fetched and normalized */
   searchQuery?: (companyName: string) => string;
   /** planner-discovered probes: the query and rationale, persisted as the playbook */
-  probeMeta?: { query: string; why: string };
+  probeMeta?: { query: string; why: string; label?: string; family?: Family };
   /** evidence cap for the normalizer (default 8); higher for backfill-rich sources */
   maxItems?: number;
 };
