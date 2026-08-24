@@ -136,7 +136,14 @@ export default async function LeadTimePage({ params }: PageProps<"/company/[tick
             {timeline.expectedX != null && (
               <g>
                 <rect x={timeline.expectedX - 4} y={116} width={8} height={8} fill="none" stroke="var(--color-rust)" strokeWidth={1.5} />
-                <text x={timeline.expectedX + 6} y={106} fontSize={11.5} fontWeight={600} fill="var(--color-rust)">
+                <text
+                  x={timeline.expectedX > 990 ? timeline.expectedX - 8 : timeline.expectedX + 6}
+                  y={106}
+                  textAnchor={timeline.expectedX > 990 ? "end" : "start"}
+                  fontSize={11.5}
+                  fontWeight={600}
+                  fill="var(--color-rust)"
+                >
                   next report · expected ~{expectedOn ? formatDay(expectedOn) : ""}
                 </text>
               </g>
@@ -296,7 +303,7 @@ function layoutCycleTimeline(
     })
     .sort((a, b) => a.px - b.px)
     .map((mark) => {
-      const width = mark.label.length * 6.4 + 14;
+      const width = mark.label.length * (mark.isKey ? 7.4 : 6.4) + 16;
       const start = mark.anchorEnd ? mark.px - width : mark.px;
       const end = mark.anchorEnd ? mark.px : mark.px + width;
       let lane = laneEnds.findIndex((laneEnd) => start > laneEnd);
