@@ -35,28 +35,27 @@ export async function GET(request: NextRequest) {
   if (!scan) return Response.json({ ticker, ok: false, error: "no complete scan to attach prices to" }, { status: 422 });
 
   const started = Date.now();
-  // two fixed stores per run keeps the whole job under the function ceiling
-  const stores = pricing.stores.slice(0, 2);
-  console.log(`cron menu-prices ${ticker}: reading ${stores.length} stores (${stores.join(" · ")})`);
+  // ONE store per run: a store takes ~6-10 min of real browser, so two in
+  // parallel get terminated by the platform and two in sequence blow the 800s
+  // function ceiling. The run rotates through the fixed sample day by day —
+  // every store still gets a comparable same-store delta every N days.
+  const dayIndex = Math.floor(Date.now() / 86_400_000) % pricing.stores.length;
+  const store = request.nextUrl.searchParams.get("store") ?? pricing.stores[dayIndex];
+  console.log(`cron menu-prices ${ticker}: reading ${store} (rotation ${dayIndex + 1}/${pricing.stores.length})`);
 
-  const results = await Promise.all(
-    stores.map((store) => readStoreBasket({ orderingUrl: pricing.orderingUrl, store, basket: pricing.basket })),
-  );
-  const baskets = [];
-  for (const [i, r] of results.entries()) {
-    if (r.ok) {
-      baskets.push(r.basket);
-      console.log(`cron menu-prices ${ticker}: ${stores[i]} — ${r.basket.items.length} priced items in ${Math.round(r.durationMs / 1000)}s`);
-    } else {
-      console.log(`cron menu-prices ${ticker}: ${stores[i]} failed because ${r.error}`);
-    }
+  const result = await readStoreBasket({ orderingUrl: pricing.orderingUrl, store, basket: pricing.basket });
+  if (!result.ok) {
+    console.log(`cron menu-prices ${ticker}: ${store} failed because ${result.error}`);
+    return Response.json({ ticker, ok: false, store, error: result.error }, { status: 502 });
   }
-  if (baskets.length === 0) {
-    return Response.json({ ticker, ok: false, error: "no store returned a valid basket" }, { status: 502 });
-  }
+  const baskets = [result.basket];
+  console.log(`cron menu-prices ${ticker}: ${store} — ${result.basket.items.length} priced items in ${Math.round(result.durationMs / 1000)}s`);
 
-  // per-store per-item prices as counted evidence; median as the tracked metric
-  await sql`delete from footprint_counts where scan_id = ${scan.id} and dimension = 'menu_price_cents'`;
+  // per-store per-item prices as counted evidence; median as the tracked metric.
+  // only this store's rows are replaced — other stores' latest prices persist
+  await sql`
+    delete from footprint_counts where scan_id = ${scan.id} and dimension = 'menu_price_cents'
+      and key like ${`${result.basket.store} ·%`}`;
   for (const basket of baskets) {
     for (const item of basket.items) {
       await sql`

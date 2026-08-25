@@ -83,10 +83,14 @@ export async function computeDeltas(sql: Sql, companyId: number, scanId: number)
     };
   });
 
+  // menu_price_cents rows are prices, not populations — they have their own
+  // card and metric, and would read as nonsense in the moves list
   const currentCounts = await sql`
-    select dimension, key, count from footprint_counts where scan_id = ${scanId}`;
+    select dimension, key, count from footprint_counts
+    where scan_id = ${scanId} and dimension <> 'menu_price_cents'`;
   const previousCounts = previous
-    ? await sql`select dimension, key, count from footprint_counts where scan_id = ${previous.id}`
+    ? await sql`select dimension, key, count from footprint_counts
+        where scan_id = ${previous.id} and dimension <> 'menu_price_cents'`
     : [];
   // NUL separator: count keys contain spaces ("New York, NY"), NUL never does
   const prevCount = new Map(previousCounts.map((c) => [`${c.dimension}\u0000${c.key}`, Number(c.count)]));
