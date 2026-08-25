@@ -8,6 +8,7 @@
     { "path": "/api/cron/scan?ticker=SBUX", "schedule": "0 4 * * *" },
     { "path": "/api/cron/scan?ticker=TSLA", "schedule": "20 4 * * *" },
     { "path": "/api/cron/scan?ticker=Z", "schedule": "40 4 * * *" },
-    { "path": "/api/cron/scan?ticker=UNH", "schedule": "0 5 * * *" }
+    { "path": "/api/cron/scan?ticker=UNH", "schedule": "0 5 * * *" },
+    { "path": "/api/cron/menu-prices?ticker=CBRL", "schedule": "30 5 * * *" }
   ]
 }

@@ -14,6 +14,9 @@ export type SourceProfile = {
   newsroomUrl?: string;
   downdetectorSlug?: string;
   companyDomain?: string;
+  // per-location menu pricing: the ordering site plus a small FIXED store
+  // sample (stability is what makes day-over-day price deltas comparable)
+  menuPricing?: { orderingUrl: string; stores: string[]; basket: string[] };
 };
 
 export type SourceSpec = {

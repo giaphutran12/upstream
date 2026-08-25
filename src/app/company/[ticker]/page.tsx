@@ -104,6 +104,7 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
 
   const deltaByStateKey = new Map((deltas?.footprintMoves ?? []).map((m) => [`${m.dimension} ${m.key}`, m.delta]));
   const storeRows = counts.filter((c) => c.dimension === "stores_by_state").slice(0, 12);
+  const menuRows = counts.filter((c) => c.dimension === "menu_price_cents").sort((a, b) => String(a.key).localeCompare(String(b.key))).slice(0, 14);
   const jobRows = counts.filter((c) => c.dimension === "jobs_by_department").slice(0, 8);
   const storeTotal = deltas?.footprintTotals["stores_by_state"];
   const jobTotal = deltas?.footprintTotals["jobs_by_department"];
@@ -255,13 +256,42 @@ export default async function CompanyReadPage({ params }: PageProps<"/company/[t
             </div>
           )}
 
-          {(storeRows.length > 0 || jobRows.length > 0) && (
+          {(storeRows.length > 0 || jobRows.length > 0 || menuRows.length > 0) && (
             <div className="mb-11">
               <div className="mb-3.5 flex items-baseline gap-4">
                 <h2 className="font-serif text-[26px] font-medium">Counted at scale</h2>
                 <div className="text-xs text-muted">Enumerated live from the company’s own infrastructure, counted in code.</div>
               </div>
               <div className="grid grid-cols-2 gap-5 max-md:grid-cols-1">
+                {menuRows.length > 0 && (
+                  <div className="card">
+                    <div className="eyebrow mb-2.5 text-muted" style={{ letterSpacing: "0.14em" }}>
+                      Menu prices by location
+                    </div>
+                    <div className="mt-1 grid gap-y-1.5">
+                      {menuRows.map((row) => {
+                        const delta = deltaByStateKey.get(`menu_price_cents ${row.key}`);
+                        return (
+                          <div key={String(row.key)} className="flex items-baseline justify-between gap-3 text-[12.5px] tnum">
+                            <span>{String(row.key)}</span>
+                            <span className="whitespace-nowrap">
+                              <strong>${(Number(row.count) / 100).toFixed(2)}</strong>
+                              {delta != null && delta !== 0 && (
+                                <span className={delta > 0 ? "delta-bad" : "font-semibold"}>
+                                  {" "}
+                                  {delta >= 0 ? "+" : "−"}${Math.abs(delta / 100).toFixed(2)}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="card-footer">
+                      Read from the ordering site per store by browser agents — prices a fetch can’t see.
+                    </div>
+                  </div>
+                )}
                 {storeRows.length > 0 && (
                   <div className="card">
                     <div className="eyebrow mb-2.5 text-muted" style={{ letterSpacing: "0.14em" }}>
