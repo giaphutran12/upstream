@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { db } from "@/lib/db";
 import { fetchPages, runAgent, searchWeb, withBrowserSlot } from "@/lib/tinyfish";
 import { plannedSources, FAMILY_WEIGHTS, type Family, type SourceProfile, type SourceSpec } from "@/lib/sources";
@@ -5,7 +6,7 @@ import { normalizeSource, verifyQuotes } from "@/lib/normalize";
 import { readEdgar } from "@/lib/edgar";
 import { collectStoreFootprint, collectJobsFootprint, countDeltaRead } from "@/lib/footprint";
 import { directionScore, familyScores } from "@/lib/scoring";
-import { resolveCompany } from "@/lib/resolve";
+import { resolveCompany, lookupCik } from "@/lib/resolve";
 import { planDeepProbes, replanProbes, probeToSpec, type PlaybookEntry } from "@/lib/planner";
 import { synthesizeTakeaways, type CycleCall, type Takeaway, type Verdict } from "@/lib/synthesize";
 
@@ -56,10 +57,15 @@ export async function POST(request: Request) {
 
   const encoder = new TextEncoder();
 
+  // The scan must survive a dropped viewer: after() holds the invocation open
+  // until the pipeline lands even when the response stream is long gone.
+  let pipeline: Promise<void> = Promise.resolve();
+
   const stream = new ReadableStream({
-    async start(controller) {
-      // The scan must survive a dropped viewer: send() never throws, and the
-      // pipeline keeps persisting after the stream dies.
+    start(controller) {
+      pipeline = (async () => {
+      // send() never throws, and the pipeline keeps persisting after the
+      // stream dies.
       let closed = false;
       const send = (event: ScanEvent) => {
         if (closed) return;
@@ -78,29 +84,41 @@ export async function POST(request: Request) {
 
       let scanRowId: number | null = null;
       try {
-        // 1. company (seeded or resolved live)
+        // 1. the company and scan rows must exist BEFORE any slow work:
+        //    every reattaching view (Live Scan, ScanWait, the status endpoint)
+        //    keys off those rows, and profile resolution for a new ticker
+        //    takes long enough for a viewer to click away and find nothing
         let [company] = await sql`select id, ticker, name, source_profile from companies where ticker = ${ticker}`;
         if (!company) {
-          const resolved = await resolveCompany(ticker);
-          if (!resolved) {
+          const listed = await lookupCik(ticker);
+          if (!listed) {
             send({ type: "scan_error", message: `No SEC-listed company found for ${ticker}.` });
             return;
           }
-          [company] = await sql`
+          await sql`
             insert into companies (ticker, name, source_profile)
-            values (${ticker}, ${resolved.name}, ${sql.json(resolved.profile as never)})
-            returning id, ticker, name, source_profile`;
-          console.log(`scan: resolved new company ${ticker} with ${Object.keys(resolved.profile).length} profile keys`);
-        }
-        const profile = company.source_profile as SourceProfile;
-        const sources = plannedSources(profile);
-        if (sources.length === 0) {
-          send({ type: "scan_error", message: `${ticker} resolved but no scannable sources in its profile.` });
-          return;
+            values (${ticker}, ${listed.title}, ${sql.json({} as never)})
+            on conflict (ticker) do nothing`;
+          [company] = await sql`select id, ticker, name, source_profile from companies where ticker = ${ticker}`;
+          console.log(`scan: created company shell for ${ticker} (${listed.title}) — profile resolves next`);
         }
 
         const [scan] = await sql`insert into scans (company_id) values (${company.id}) returning id`;
         scanRowId = Number(scan.id);
+
+        // 2. profile (seeded, or resolved live for a shell just created —
+        //    an empty profile from an earlier crashed resolve also lands here)
+        let profile = company.source_profile as SourceProfile;
+        if (!profile || Object.keys(profile).length === 0) {
+          const resolved = await resolveCompany(ticker);
+          if (!resolved) throw new Error(`No SEC-listed company found for ${ticker}.`);
+          profile = resolved.profile;
+          await sql`update companies set name = ${resolved.name}, source_profile = ${sql.json(profile as never)} where id = ${company.id}`;
+          company = { ...company, name: resolved.name };
+          console.log(`scan ${scan.id}: resolved ${ticker} with ${Object.keys(profile).length} profile keys`);
+        }
+        const sources = plannedSources(profile);
+        if (sources.length === 0) throw new Error(`${ticker} resolved but no scannable sources in its profile.`);
         send({
           type: "scan_created",
           scanId: scan.id,
@@ -426,8 +444,11 @@ export async function POST(request: Request) {
           }
         }
       }
+      })();
+      return pipeline;
     },
   });
+  after(() => pipeline);
 
   return new Response(stream, {
     headers: {

@@ -49,6 +49,38 @@ const IDLE: ScanState = { phase: "idle", sources: [], score: null, provisional: 
 /** The last ticker this browser scanned — survives refresh and navigation. */
 export const ACTIVE_SCAN_KEY = "upstream:active-scan";
 
+// A just-started scan takes a beat to exist server-side (a brand-new ticker
+// resolves its source profile first). For this long after starting, "no scan
+// found" means "still materializing", not "nothing running".
+const START_GRACE_MS = 150_000;
+
+export function rememberActiveScan(ticker: string) {
+  try {
+    localStorage.setItem(ACTIVE_SCAN_KEY, JSON.stringify({ ticker: ticker.toUpperCase(), at: Date.now() }));
+  } catch {}
+}
+
+export function readActiveScan(): { ticker: string; at: number | null } | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_SCAN_KEY);
+    if (!raw) return null;
+    if (raw.startsWith("{")) {
+      const parsed = JSON.parse(raw) as { ticker?: string; at?: number };
+      if (!parsed.ticker) return null;
+      return { ticker: String(parsed.ticker).toUpperCase(), at: Number(parsed.at) || null };
+    }
+    return { ticker: raw.trim().toUpperCase(), at: null }; // pre-JSON value from an older session
+  } catch {
+    return null;
+  }
+}
+
+function clearActiveScan() {
+  try {
+    localStorage.removeItem(ACTIVE_SCAN_KEY);
+  } catch {}
+}
+
 type StatusSnapshot = {
   company: { ticker: string; name: string } | null;
   scan: { id: number; status: string; error: string | null } | null;
@@ -104,19 +136,27 @@ export function useScan() {
   const resume = useCallback(
     async (ticker: string) => {
       stopPolling();
+      const stored = readActiveScan();
+      const graceUntil = (stored?.at ?? Date.now()) + START_GRACE_MS;
       const tick = async () => {
         let running = false;
         try {
           const res = await fetch(`/api/scan/status?ticker=${encodeURIComponent(ticker)}`);
           const data = (await res.json()) as StatusSnapshot;
           if (!data.scan) {
-            try {
-              localStorage.removeItem(ACTIVE_SCAN_KEY);
-            } catch {}
-            return;
+            if (Date.now() < graceUntil) {
+              // the scan row hasn't materialized yet (new tickers resolve
+              // their sources first) — show it as starting and keep polling
+              setState((s) => (s.phase === "running" ? s : { ...IDLE, phase: "running", startedAt: stored?.at ?? Date.now() }));
+              running = true;
+            } else {
+              console.log(`scan resume: no scan for ${ticker} after the grace window — clearing the reattach key`);
+              clearActiveScan();
+            }
+          } else {
+            setState(stateFromSnapshot(data));
+            running = data.scan.status === "running";
           }
-          setState(stateFromSnapshot(data));
-          running = data.scan.status === "running";
         } catch {
           running = true; // transient poll failure — the job is server-side, try again
         }
@@ -133,9 +173,7 @@ export function useScan() {
     pollRef.current = null;
     const abort = new AbortController();
     abortRef.current = abort;
-    try {
-      localStorage.setItem(ACTIVE_SCAN_KEY, ticker);
-    } catch {}
+    rememberActiveScan(ticker);
     setState({ ...IDLE, phase: "running", startedAt: Date.now() });
 
     try {

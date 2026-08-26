@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { TopBar } from "@/components/TopBar";
 import { Takeaways } from "@/components/Takeaways";
 import { CycleStrip } from "@/components/CycleStrip";
-import { useScan, ACTIVE_SCAN_KEY, type SourceState } from "@/hooks/use-scan";
+import { useScan, readActiveScan, type SourceState } from "@/hooks/use-scan";
 
 const FAMILY_ROWS = [
   { key: "sentiment", label: "Customer Sentiment", weight: "40%" },
@@ -70,14 +70,12 @@ export default function LiveScanPage() {
     // reattach: the scan is a server-side job that persists on its own — a
     // refresh or a wander through other tabs rebuilds this exact view from
     // the last ticker this browser scanned, running or finished
-    let stored: string | null = null;
-    try {
-      stored = localStorage.getItem(ACTIVE_SCAN_KEY)?.trim().toUpperCase() ?? null;
-    } catch {}
+    const stored = readActiveScan();
     if (stored) {
-      picked.current = stored;
-      setTicker(stored);
-      void resume(stored);
+      picked.current = stored.ticker;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- mount-only hydration from localStorage
+      setTicker(stored.ticker);
+      void resume(stored.ticker);
     }
     return stopPolling;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -179,7 +177,7 @@ export default function LiveScanPage() {
             <>
               <div className="text-[13px] font-semibold">
                 <span className="pulse-dot pulse-dot--fast mr-2" aria-hidden />
-                {state.sources.length} agents dispatched
+                {state.sources.length > 0 ? `${state.sources.length} agents dispatched` : "scan starting — planning sources"}
               </div>
               <div className="mt-1 text-xs text-muted">
                 {counts.complete} complete · {counts.working} working · {counts.queued} queued

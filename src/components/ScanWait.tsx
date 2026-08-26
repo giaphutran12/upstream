@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { rememberActiveScan } from "@/hooks/use-scan";
 
 type ScanStatus = {
   scan: { id: number; status: string; error: string | null } | null;
@@ -63,6 +64,7 @@ export function ScanWait({ ticker }: { ticker: string }) {
         <button
           onClick={() => {
             setRestarting(true);
+            rememberActiveScan(ticker); // the Live Scan tab reattaches to this run too
             // fire the background job and drop the stream immediately — the
             // pipeline persists on its own and the poll above tracks it
             void fetch("/api/scan", {
